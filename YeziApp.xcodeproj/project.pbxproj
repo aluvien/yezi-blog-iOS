@@ -1,0 +1,469 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 71;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A001 /* YeziAppApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F001 /* YeziAppApp.swift */; };
+		A002 /* AppContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F002 /* AppContainer.swift */; };
+		A003 /* APIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F003 /* APIModels.swift */; };
+		A004 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F004 /* APIClient.swift */; };
+		A005 /* AppServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = F005 /* AppServices.swift */; };
+		A006 /* PaginationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F006 /* PaginationState.swift */; };
+		A007 /* MarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F007 /* MarkdownParser.swift */; };
+		A008 /* ContentViewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F008 /* ContentViewModels.swift */; };
+		A009 /* ReusableViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F009 /* ReusableViews.swift */; };
+		A010 /* RootContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F010 /* RootContentView.swift */; };
+		A011 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F011 /* HomeView.swift */; };
+		A012 /* ExploreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F012 /* ExploreView.swift */; };
+		A013 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F013 /* SearchView.swift */; };
+		A014 /* PostDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F014 /* PostDetailView.swift */; };
+		A015 /* CollectionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F015 /* CollectionViews.swift */; };
+		A016 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F016 /* AboutView.swift */; };
+		A017 /* YeziAppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F017 /* YeziAppTests.swift */; };
+		A018 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = F021 /* PrivacyInfo.xcprivacy */; };
+		A019 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F022 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		X001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = PRJ001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = N001;
+			remoteInfo = YeziApp;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		F001 /* YeziAppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YeziAppApp.swift; sourceTree = "<group>"; };
+		F002 /* AppContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainer.swift; sourceTree = "<group>"; };
+		F003 /* APIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIModels.swift; sourceTree = "<group>"; };
+		F004 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		F005 /* AppServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServices.swift; sourceTree = "<group>"; };
+		F006 /* PaginationState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaginationState.swift; sourceTree = "<group>"; };
+		F007 /* MarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownParser.swift; sourceTree = "<group>"; };
+		F008 /* ContentViewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentViewModels.swift; sourceTree = "<group>"; };
+		F009 /* ReusableViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReusableViews.swift; sourceTree = "<group>"; };
+		F010 /* RootContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootContentView.swift; sourceTree = "<group>"; };
+		F011 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		F012 /* ExploreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreView.swift; sourceTree = "<group>"; };
+		F013 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		F014 /* PostDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostDetailView.swift; sourceTree = "<group>"; };
+		F015 /* CollectionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionViews.swift; sourceTree = "<group>"; };
+		F016 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
+		F017 /* YeziAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YeziAppTests.swift; sourceTree = "<group>"; };
+		F018 /* YeziApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YeziApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F019 /* YeziAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YeziAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		F021 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		F022 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		G001 /* YeziApp */ = {
+			isa = PBXGroup;
+			children = (
+				G002 /* App */,
+				G003 /* Models */,
+				G004 /* Networking */,
+				G005 /* Services */,
+				G006 /* ViewModels */,
+				G007 /* Utilities */,
+				G013 /* Views */,
+				F020 /* Info.plist */,
+				F021 /* PrivacyInfo.xcprivacy */,
+				F022 /* Assets.xcassets */,
+			);
+			path = YeziApp;
+			sourceTree = "<group>";
+		};
+		G002 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				F001 /* YeziAppApp.swift */,
+				F002 /* AppContainer.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		G003 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				F003 /* APIModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		G004 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				F004 /* APIClient.swift */,
+			);
+			path = Networking;
+			sourceTree = "<group>";
+		};
+		G005 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				F005 /* AppServices.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		G006 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				F008 /* ContentViewModels.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		G007 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				F006 /* PaginationState.swift */,
+				F007 /* MarkdownParser.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		G008 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				F009 /* ReusableViews.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		G009 /* Screens */ = {
+			isa = PBXGroup;
+			children = (
+				F011 /* HomeView.swift */,
+				F012 /* ExploreView.swift */,
+				F013 /* SearchView.swift */,
+				F014 /* PostDetailView.swift */,
+				F015 /* CollectionViews.swift */,
+				F016 /* AboutView.swift */,
+			);
+			path = Screens;
+			sourceTree = "<group>";
+		};
+		G010 /* YeziApp */ = {
+			isa = PBXGroup;
+			children = (
+				G001 /* YeziApp */,
+				G011 /* YeziAppTests */,
+				G012 /* Products */,
+			);
+			name = YeziApp;
+			sourceTree = "<group>";
+		};
+		G011 /* YeziAppTests */ = {
+			isa = PBXGroup;
+			children = (
+				F017 /* YeziAppTests.swift */,
+			);
+			path = YeziAppTests;
+			sourceTree = "<group>";
+		};
+		G012 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F018 /* YeziApp.app */,
+				F019 /* YeziAppTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		G013 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				F010 /* RootContentView.swift */,
+				G008 /* Components */,
+				G009 /* Screens */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		N001 /* YeziApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C001 /* Build configuration list for PBXNativeTarget "YeziApp" */;
+			buildPhases = (
+				P001 /* Sources */,
+				B001 /* Frameworks */,
+				P003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = YeziApp;
+			productName = YeziApp;
+			productReference = F018 /* YeziApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+		N002 /* YeziAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C003 /* Build configuration list for PBXNativeTarget "YeziAppTests" */;
+			buildPhases = (
+				P002 /* Sources */,
+				B002 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D001 /* PBXTargetDependency */,
+			);
+			name = YeziAppTests;
+			productName = YeziAppTests;
+			productReference = F019 /* YeziAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		PRJ001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					N001 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					N002 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = N001;
+					};
+				};
+			};
+			buildConfigurationList = C000 /* Build configuration list for PBXProject "YeziApp" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = G010 /* YeziApp */;
+			productRefGroup = G012 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				N001 /* YeziApp */,
+				N002 /* YeziAppTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		P003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A018 /* PrivacyInfo.xcprivacy in Resources */,
+				A019 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		P001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A001 /* YeziAppApp.swift in Sources */,
+				A002 /* AppContainer.swift in Sources */,
+				A003 /* APIModels.swift in Sources */,
+				A004 /* APIClient.swift in Sources */,
+				A005 /* AppServices.swift in Sources */,
+				A006 /* PaginationState.swift in Sources */,
+				A007 /* MarkdownParser.swift in Sources */,
+				A008 /* ContentViewModels.swift in Sources */,
+				A009 /* ReusableViews.swift in Sources */,
+				A010 /* RootContentView.swift in Sources */,
+				A011 /* HomeView.swift in Sources */,
+				A012 /* ExploreView.swift in Sources */,
+				A013 /* SearchView.swift in Sources */,
+				A014 /* PostDetailView.swift in Sources */,
+				A015 /* CollectionViews.swift in Sources */,
+				A016 /* AboutView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A017 /* YeziAppTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		D001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = N001 /* YeziApp */;
+			targetProxy = X001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		BC001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		BC002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		BC003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 19;
+				DEVELOPMENT_TEAM = DR2TNGTRAJ;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = YeziApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "叶子";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = me.aluvien.yeziblog;
+				PRODUCT_NAME = YeziApp;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		BC004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 19;
+				DEVELOPMENT_TEAM = DR2TNGTRAJ;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = YeziApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "叶子";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = me.aluvien.yeziblog;
+				PRODUCT_NAME = YeziApp;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		BC005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(BUILT_PRODUCTS_DIR)/YeziApp.app/YeziApp";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = DR2TNGTRAJ;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = me.yezi.YeziAppTests;
+				PRODUCT_NAME = YeziAppTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/YeziApp.app/YeziApp";
+			};
+			name = Debug;
+		};
+		BC006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(BUILT_PRODUCTS_DIR)/YeziApp.app/YeziApp";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = DR2TNGTRAJ;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = me.yezi.YeziAppTests;
+				PRODUCT_NAME = YeziAppTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/YeziApp.app/YeziApp";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C000 /* Build configuration list for PBXProject "YeziApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC001 /* Debug */,
+				BC002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C001 /* Build configuration list for PBXNativeTarget "YeziApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC003 /* Debug */,
+				BC004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C003 /* Build configuration list for PBXNativeTarget "YeziAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC005 /* Debug */,
+				BC006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = PRJ001 /* Project object */;
+}
