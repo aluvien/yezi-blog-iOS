@@ -1,54 +1,77 @@
-# Yezi 管理 App
+# 叶子 · 原生阅读与创作 App
 
-Yezi 管理 App 是面向 `https://yezi.me` 的 iOS 网站管理客户端，参考 WordPress iOS 的工作台体验。登录页支持切换到 `https://yezi.biaozhu.me` 或添加自定义域名；它提供原生登录、概览/内容/评论/更多导航，并在登录后进入网站现有的安全后台，支持查看、编辑、发布和管理文章、想法、作品、评论、附件、分类、引用及站点设置。
+面向 Yezi 网站的 iOS 17+ 客户端。主导航为 **絮语 / 文章 / 评论 / 管理**，登录默认进入絮语；文件管理位于管理页的独立入口。正文、图片与 QQ 音乐可组合发布，纯图片不需要填入占位文案。登录页保留默认、备用及自定义站点。
+
+## 创作与管理
+
+- **絮语**：文字/照片/音乐快捷记录、继续上次草稿、类型筛选与已加载内容搜索、Markdown 信息流、图片大图、音乐试听、直接编辑、复制和确认删除。右下角固定写作入口。
+- **文章**：站点搜索、全部/服务器草稿/已发布筛选；点击卡片阅读，点击编辑进入写作。Markdown 格式栏支持在光标或选区插入标题、粗体、列表、链接与代码，可撤销/重做和切换预览。封面、Slug、分类、标签、关联附件和引用在发布设置中。保存服务器草稿是显式操作，首次 POST 后保存返回 ID，后续 PATCH；本机自动保存绝不将已发布文章转为草稿。
+- **评论**：底部菜单直接进入审核与回复；状态筛选、访客与来源信息、完整正文、已有回复和常用操作集中在独立卡片中。保存失败保留回复，允许重试；阻止保存期间的重复请求。
+- **文件**：已加载文件搜索、类型筛选与排序，支持文件/相册上传、详情与引用、分享和删除。Markdown 原生阅读，PDF、图片及其他系统支持格式通过 Quick Look 预览，可分享或保存原文件。文件先通过现有会话下载到本机临时目录；无法预览时明确提示。
+- **本机草稿**：从絮语/文章右上角和管理页进入，按站点保存文字、音乐与本地图片。只打开或聚焦内容不会创建草稿；首次修改后自动保存，切后台和关闭编辑器会保存未提交的改动。写盘失败留在编辑器并允许重试。
+- **管理**：文件管理独立入口，基础信息、音乐、外观、GitHub 更新四个常用设置；作品、引用库、分类标签、关于页面统一卡片、表单、原生返回与保存区。引用阅读与更多操作分开呈现；分类、引用及回复编辑失败时保留输入。关于页面共用文章的 Markdown 格式栏、撤销重做和光标插入；音乐选择共用新版搜索器。站点概览的文章和絮语入口接入新版阅读与创作流程。
+
+图片一次最多选择 9 张，按选择顺序显示占位与缩略图；后台 ImageIO 下采样到最长边 2048，JPEG 约 0.82，透明图片保留 PNG。上传并发最多 2，失败项可独立重试、移除和前后移动。未完成或失败图片会阻止发布；没有虚假的百分比进度。相机仅在点击“拍照”时请求权限，无相机设备显示解释。
+
+音乐选择支持 QQ 歌曲/歌单搜索、站点隔离的最近添加、完整 QQ 链接及 `!music qqvip:MID:song` 手动输入（也兼容不带 `!music` 的输入）。想法发布使用 `!music qqvip:…` 行标记，并可用 `:fold` 把音乐折叠到想法顶部。播放器通过精确 MID 补充缺失的歌名、歌手与封面；所有卡片共享单一播放器，关闭/切后台停止。资源不可试听时仍能添加合法音乐。编辑旧内容兼容音乐代码块，保留多条音乐、未识别 Markdown 和引用。
+
+发布只允许单次在途请求。响应不确定时保留草稿并引导核对列表，**不自动重发创建请求**，也不会误报“已发布”。只有已确认成功才清理本草稿；从本机删除图片或草稿不删除服务器附件。
 
 ## 打开与运行
 
-1. 使用 Xcode 27 或更新版本打开 `YeziApp.xcodeproj`。
-2. 选择 `YeziApp` scheme 和 iOS Simulator / iPhone 真机。
-3. Deployment Target 为 iOS 17.0；运行前在 Xcode 的 Signing & Capabilities 中选择自己的 Team。
-4. 启动后输入网站管理员密码，进入后台管理。
-
-登录调用网站的 `/api/admin/login`，会话 Cookie 仅保存在系统网络会话与 WebKit 后台存储中；App 不保存管理员密码。退出登录会同时请求网站注销并清理本地会话。
-
-命令行构建示例（当前开发环境的 Xcode 位于 beta 路径）：
+使用 `/Applications/Xcode.app` 中的 Xcode 27 打开 `YeziApp.xcodeproj`，选择 `YeziApp` scheme。真机运行需要自己的签名 Team。通过 `/api/admin/login` 登录；密码不会落盘，管理员 Cookie 仅由系统会话管理，原生写请求保留 Origin 与 CSRF 头。
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 xcodebuild -project YeziApp.xcodeproj -scheme YeziApp \
-  -sdk iphonesimulator -configuration Debug \
-  -derivedDataPath /private/tmp/YeziAppDerivedData \
+  -configuration Debug -sdk iphonesimulator \
+  -derivedDataPath /private/tmp/YeziCreationDerivedData \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
-## 架构
+## 离线原生视觉验收
 
-- `Views/RootContentView.swift`：原生管理壳、登录页、四个管理入口、会话生命周期和 WebKit 后台容器。
-- `App/YeziAppApp.swift`：App 入口。
-- 文章 Markdown 编辑器、附件上传、引用卡片、评论审核、站点设置等编辑流程复用网站后台已有实现，避免移动端与网站出现两套不一致的管理逻辑。
-- WebKit 使用默认数据存储承接登录会话；外部链接交给系统打开，后台内链保留在 App 内导航。
-
-## 管理页面
-
-登录后通过原生底部导航进入：
-
-- 概览：后台仪表盘、文章/想法/作品/评论统计。
-- 内容：文章列表、新建/编辑文章、草稿与发布。
-- 评论：审核、公开/撤回、作者回复和删除。
-- 更多：想法、作品、关于我、引用库、附件、分类与标签、常规设置、音乐设置和外观主题。
-
-这些页面加载网站已有的 `/admin/...` 路由，因此现有的 Markdown 工具、图片上传、引用快照和服务器端校验均保持一致。
-
-## 验证
-
-已使用 Xcode 27 的 Debug Simulator 配置构建成功：
+**仅 Debug** 支持以下启动参数，Release 会编译移除 fixture 实现。Debug 明确使用 `DEBUG` 与 `-Onone`。
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
+xcrun simctl install <device-id> /private/tmp/YeziCreationDerivedData/Build/Products/Debug-iphonesimulator/YeziApp.app
+xcrun simctl launch <device-id> me.aluvien.yeziblog --creation-preview --preview-screen composer
+```
+
+`--preview-screen` 可取 `feed`、`composer`、`music`、`articles`（文章列表）、`article`（文章编辑器）、`reader`（文章阅读）、`comments`、`reply`、`files`、`file-reader`（Markdown 文件）、`file-pdf`、`file-image`、`drafts`、`settings`（发布设置）、`manage`、`site-settings`、`music-settings`、`appearance`、`updates`、`works`、`work-editor`、`taxonomy`、`taxonomy-editor`、`references`、`reference-editor`、`reference-cache`、`reference-reader`、`about`、`overview`。加 `--preview-keyboard` 可让 composer/article 正文聚焦显示真实键盘；普通 preview 不自动弹出键盘。演示使用独立 `creation-preview.invalid` 站点、受控 URLProtocol 响应及本地图片，不访问线上 API/音频/图片。演示草稿仍保存在模拟器本机，可检查离开与恢复。正常启动不受 preview 影响。
+
+## 模块与数据安全
+
+- `YeziApp/Creation/CreationDraftStore.swift`：canonical origin 隔离、原子 JSON、revision 防旧写覆盖、文件保护、损坏文件保留且不隐藏健康草稿、只清理严格 UUID 归属的 jpg/png。
+- `MediaUploadQueue.swift`：后台处理、并发槽、取消晚到保护、重试与本地文件生命周期。
+- `CreationComposerModel.swift`：可靠本机保存、文章严格加载、一次性提交快照、状态与终态保护。
+- `CreationComposerView.swift`、`CreationHubViews.swift`、`MusicPicker.swift`：独立可见编辑顶栏、四 tab 原生页面、音乐搜索/试听。
+- `MarkdownWritingView.swift`：UITextView 光标/选区格式操作、中文输入、撤销与重做。
+- `AttachmentReaderView.swift`：文件分类、临时下载、Markdown 阅读与 Quick Look 预览。
+- `Views/RootContentView.swift`：登录/站点/会话路由与原管理功能；旧创作入口统一接入新编辑器。
+- `Networking/APIClient.swift`：真实私有 API、严格文章必需字段、直接/包裹响应识别和真实 decoder 的分页别名。
+
+本机草稿位于 Application Support/CreationDrafts，按站点 origin 摘要分目录，不保存密码或 Cookie，不会静默删除损坏 JSON。删除草稿需确认；音乐最近记录与其它草稿不受影响。
+
+## 回归验证
+
+`YeziAppTests/CreationTests.swift` 全部网络交互使用 URLProtocol fixtures，覆盖草稿重建/缺失/损坏、站点隔离、终态和清空保存、四种想法 payload、双击/超时、图片并发/在途移除/定向重试、音乐查询 generation、封面与引用、严格响应/分页、文章 POST→PATCH 及远端已发布状态保护。原有测试保持运行。
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 xcodebuild -project YeziApp.xcodeproj -scheme YeziApp \
-  -sdk iphonesimulator -configuration Debug \
-  -derivedDataPath /private/tmp/YeziAppAdminDerivedData \
+  -configuration Debug -sdk iphonesimulator \
+  -destination 'platform=iOS Simulator,id=499FCB18-FC0B-4C89-A0F7-28345BEBE2CB' \
+  -derivedDataPath /private/tmp/YeziCreationDerivedData \
+  -resultBundlePath /private/tmp/YeziCreationTests-unique.xcresult \
+  CODE_SIGNING_ALLOWED=NO test
+
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+xcodebuild -project YeziApp.xcodeproj -scheme YeziApp \
+  -configuration Release -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  -derivedDataPath /private/tmp/YeziCreationDerivedData \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
-当前执行环境的 CoreSimulator 服务无法启动，因此未能在本机自动完成交互式登录验证；在 Xcode 中运行后，使用网站管理员密码登录即可验证完整后台流程。
+相机拍摄、系统照片实际选择、真实 QQ 音频和线上创建需要人工实机验收；自动回归不会写入线上服务。2026-10-15 改版截图见 `docs/design/interaction-20261015/index.html`；历史 A01–A20 设计验收保存在 `docs/design/`。

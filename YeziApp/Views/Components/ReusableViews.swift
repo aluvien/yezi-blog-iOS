@@ -308,8 +308,12 @@ struct InlineMarkdownText: View {
 struct PublicMusicBlockView: View {
     let spec: String
     let container: AppContainer
+    @State private var resolvedSong: AdminMusicTrack?
 
     private var marker: MusicMarker? { MarkdownParser.musicMarker(from: spec) }
+    private var title: String { marker?.title?.trimmedNonEmpty ?? resolvedSong?.name.trimmedNonEmpty ?? (marker?.type == "playlist" ? "QQ 音乐歌单" : "QQ 音乐歌曲") }
+    private var artist: String? { marker?.artist?.trimmedNonEmpty ?? resolvedSong?.artist.trimmedNonEmpty }
+    private var cover: String? { marker?.cover?.trimmedNonEmpty ?? resolvedSong?.cover.trimmedNonEmpty }
 
     private var qqURL: URL? {
         guard let marker else { return nil }
@@ -325,8 +329,8 @@ struct PublicMusicBlockView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            if let marker,
-               let cover = marker.cover.flatMap({ container.urlResolver.absoluteURL($0) }) {
+            if marker != nil,
+               let cover = cover.flatMap({ container.urlResolver.absoluteURL($0) }) {
                 RemoteImageView(url: cover, loader: container.imageLoader) {
                     RoundedRectangle(cornerRadius: 11).fill(YeziPalette.accent.opacity(0.12))
                 }
@@ -341,10 +345,10 @@ struct PublicMusicBlockView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(marker?.title ?? (marker?.type == "playlist" ? "QQ 音乐歌单" : "QQ 音乐歌曲"))
+                Text(title)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
-                if let artist = marker?.artist {
+                if let artist {
                     Text(artist)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -373,6 +377,15 @@ struct PublicMusicBlockView: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
+        .task(id: spec) {
+            resolvedSong = nil
+            guard let marker, marker.type == "song",
+                  marker.title?.trimmedNonEmpty == nil || marker.artist?.trimmedNonEmpty == nil || marker.cover?.trimmedNonEmpty == nil else { return }
+            let api = AdminAPIClient(siteRoot: container.urlResolver.siteRoot)
+            guard let track = try? await api.fetchQQMusicMetadata(id: marker.id),
+                  !Task.isCancelled, track.mid == marker.id else { return }
+            resolvedSong = track
+        }
     }
 }
 

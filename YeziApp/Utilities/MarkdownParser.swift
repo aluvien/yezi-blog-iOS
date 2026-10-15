@@ -5,6 +5,7 @@ struct MusicMarker: Hashable, Sendable {
     let id: String
     let type: String
     let shuffle: Bool
+    let folded: Bool
     let title: String?
     let artist: String?
     let cover: String?
@@ -251,15 +252,15 @@ struct MarkdownParser: Sendable {
         return isDirectVideo ? url : nil
     }
 
-    /// Parses the site's `qqvip:id:type[:random|meta-...]` marker. Search
+    /// Parses the site's `qqvip:id:type[:random][:fold][:meta-...]` marker. Search
     /// results may include a percent-encoded metadata snapshot so the native
     /// preview can render the selected title and cover before another QQ
     /// request completes.
     static func musicMarker(from spec: String) -> MusicMarker? {
         let parts = normalizedMusicSpec(spec)
-            .split(separator: ":", maxSplits: 3)
+            .split(separator: ":", omittingEmptySubsequences: false)
             .map(String.init)
-        guard parts.count >= 3,
+        guard parts.count >= 3, parts.count <= 5,
               parts[0].lowercased() == "qqvip" else { return nil }
 
         let id = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -274,24 +275,32 @@ struct MarkdownParser: Sendable {
         let type = parts[2].lowercased()
         guard type == "song" || type == "playlist" else { return nil }
 
-        let mode = parts.count == 4 ? parts[3].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        let modes = parts.dropFirst(3).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         var title: String?
         var artist: String?
         var cover: String?
         var metadataShuffle = false
-        if let metadata = musicMetadata(from: mode) {
-            title = firstNonEmptyString(in: metadata, keys: ["title", "name", "songname", "songName"])
-            artist = firstNonEmptyString(in: metadata, keys: ["artist", "singer", "creator", "creatorName"])
-            cover = firstNonEmptyString(in: metadata, keys: ["cover", "coverUrl", "coverURL", "cover_url", "image", "imageUrl", "image_url"])
-            metadataShuffle = booleanValue(metadata["shuffle"]) || booleanValue(metadata["random"])
-        } else if !mode.isEmpty && mode != "random" && mode != "shuffle" {
-            return nil
+        var metadataFolded = false
+        var metadataCount = 0
+        for mode in modes {
+            if let metadata = musicMetadata(from: mode) {
+                metadataCount += 1
+                title = firstNonEmptyString(in: metadata, keys: ["title", "name", "songname", "songName"])
+                artist = firstNonEmptyString(in: metadata, keys: ["artist", "singer", "creator", "creatorName"])
+                cover = firstNonEmptyString(in: metadata, keys: ["cover", "coverUrl", "coverURL", "cover_url", "image", "imageUrl", "image_url"])
+                metadataShuffle = booleanValue(metadata["shuffle"]) || booleanValue(metadata["random"])
+                metadataFolded = booleanValue(metadata["folded"]) || booleanValue(metadata["fold"])
+            } else if !["random", "shuffle", "fold", "collapsed"].contains(mode.lowercased()) {
+                return nil
+            }
         }
+        guard metadataCount <= 1 else { return nil }
 
         return MusicMarker(
             id: id,
             type: type,
-            shuffle: mode == "random" || mode == "shuffle" || metadataShuffle,
+            shuffle: modes.contains(where: { ["random", "shuffle"].contains($0.lowercased()) }) || metadataShuffle,
+            folded: modes.contains(where: { ["fold", "collapsed"].contains($0.lowercased()) }) || metadataFolded,
             title: title,
             artist: artist,
             cover: cover
@@ -304,6 +313,7 @@ struct MarkdownParser: Sendable {
         id: String,
         type: String,
         shuffle: Bool = false,
+        folded: Bool = false,
         title: String? = nil,
         artist: String? = nil,
         cover: String? = nil
@@ -313,9 +323,11 @@ struct MarkdownParser: Sendable {
         let cleanTitle = title?.trimmedNonEmpty
         let cleanArtist = artist?.trimmedNonEmpty
         let cleanCover = cover?.trimmedNonEmpty
-        let suffix = shuffle ? ":random" : ""
+        let suffix = (shuffle ? ":random" : "") + (folded ? ":fold" : "")
 
-        guard cleanTitle != nil || cleanArtist != nil || cleanCover != nil else {
+        // The website accepts at most two modes after the type. Keep both
+        // playback flags when a shuffled playlist is folded.
+        guard (cleanTitle != nil || cleanArtist != nil || cleanCover != nil), !(shuffle && folded) else {
             return "qqvip:\(cleanID):\(cleanType)\(suffix)"
         }
 
@@ -323,7 +335,6 @@ struct MarkdownParser: Sendable {
         if let cleanTitle { metadata["title"] = cleanTitle }
         if let cleanArtist { metadata["artist"] = cleanArtist }
         if let cleanCover { metadata["cover"] = cleanCover }
-        if shuffle { metadata["shuffle"] = "true" }
         guard let data = try? JSONSerialization.data(withJSONObject: metadata, options: []),
               let json = String(data: data, encoding: .utf8) else {
             return "qqvip:\(cleanID):\(cleanType)\(suffix)"
@@ -332,7 +343,7 @@ struct MarkdownParser: Sendable {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-_.!~*'()")
         let encoded = json.addingPercentEncoding(withAllowedCharacters: allowed) ?? json
-        return "qqvip:\(cleanID):\(cleanType):meta-\(encoded)"
+        return "qqvip:\(cleanID):\(cleanType)\(suffix):meta-\(encoded)"
     }
 
     private static func nonEmptyString(_ value: Any?) -> String? {

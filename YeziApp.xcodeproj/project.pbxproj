@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CBA011 /* AttachmentReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI011 /* AttachmentReaderView.swift */; };
+		CBA010 /* MarkdownWritingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI010 /* MarkdownWritingView.swift */; };
 		A001 /* YeziAppApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F001 /* YeziAppApp.swift */; };
 		A002 /* AppContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F002 /* AppContainer.swift */; };
 		A003 /* APIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F003 /* APIModels.swift */; };
@@ -26,6 +28,15 @@
 		A017 /* YeziAppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F017 /* YeziAppTests.swift */; };
 		A018 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = F021 /* PrivacyInfo.xcprivacy */; };
 		A019 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F022 /* Assets.xcassets */; };
+		CBA001 /* CreationDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI001 /* CreationDraftStore.swift */; };
+		CBA002 /* MediaUploadQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI002 /* MediaUploadQueue.swift */; };
+		CBA003 /* CreationComposerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI003 /* CreationComposerModel.swift */; };
+		CBA004 /* CreationDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI004 /* CreationDesign.swift */; };
+		CBA005 /* MusicPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI005 /* MusicPicker.swift */; };
+		CBA006 /* CreationComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI006 /* CreationComposerView.swift */; };
+		CBA007 /* CreationHubViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI007 /* CreationHubViews.swift */; };
+		CBA008 /* CreationPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI008 /* CreationPreview.swift */; };
+		CBA009 /* CreationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI009 /* CreationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -39,6 +50,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CFI011 /* AttachmentReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentReaderView.swift; sourceTree = "<group>"; };
+		CFI010 /* MarkdownWritingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownWritingView.swift; sourceTree = "<group>"; };
+		CFI001 /* CreationDraftStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationDraftStore.swift; sourceTree = "<group>"; };
+		CFI002 /* MediaUploadQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaUploadQueue.swift; sourceTree = "<group>"; };
+		CFI003 /* CreationComposerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationComposerModel.swift; sourceTree = "<group>"; };
+		CFI004 /* CreationDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationDesign.swift; sourceTree = "<group>"; };
+		CFI005 /* MusicPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPicker.swift; sourceTree = "<group>"; };
+		CFI006 /* CreationComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationComposerView.swift; sourceTree = "<group>"; };
+		CFI007 /* CreationHubViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationHubViews.swift; sourceTree = "<group>"; };
+		CFI008 /* CreationPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationPreview.swift; sourceTree = "<group>"; };
+		CFI009 /* CreationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationTests.swift; sourceTree = "<group>"; };
 		F001 /* YeziAppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YeziAppApp.swift; sourceTree = "<group>"; };
 		F002 /* AppContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainer.swift; sourceTree = "<group>"; };
 		F003 /* APIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIModels.swift; sourceTree = "<group>"; };
@@ -81,10 +103,28 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		CG001 /* Creation */ = {
+			isa = PBXGroup;
+			children = (
+				CFI001 /* CreationDraftStore.swift */,
+				CFI002 /* MediaUploadQueue.swift */,
+				CFI003 /* CreationComposerModel.swift */,
+				CFI004 /* CreationDesign.swift */,
+				CFI005 /* MusicPicker.swift */,
+				CFI006 /* CreationComposerView.swift */,
+				CFI007 /* CreationHubViews.swift */,
+				CFI008 /* CreationPreview.swift */,
+				CFI010 /* MarkdownWritingView.swift */,
+				CFI011 /* AttachmentReaderView.swift */,
+			);
+			path = Creation;
+			sourceTree = "<group>";
+		};
 		G001 /* YeziApp */ = {
 			isa = PBXGroup;
 			children = (
 				G002 /* App */,
+				CG001 /* Creation */,
 				G003 /* Models */,
 				G004 /* Networking */,
 				G005 /* Services */,
@@ -183,6 +223,7 @@
 			isa = PBXGroup;
 			children = (
 				F017 /* YeziAppTests.swift */,
+				CFI009 /* CreationTests.swift */,
 			);
 			path = YeziAppTests;
 			sourceTree = "<group>";
@@ -298,6 +339,16 @@
 			buildActionMask = 2147483647;
 			files = (
 				A001 /* YeziAppApp.swift in Sources */,
+				CBA001 /* CreationDraftStore.swift in Sources */,
+				CBA002 /* MediaUploadQueue.swift in Sources */,
+				CBA003 /* CreationComposerModel.swift in Sources */,
+				CBA004 /* CreationDesign.swift in Sources */,
+				CBA005 /* MusicPicker.swift in Sources */,
+				CBA006 /* CreationComposerView.swift in Sources */,
+				CBA007 /* CreationHubViews.swift in Sources */,
+				CBA008 /* CreationPreview.swift in Sources */,
+				CBA010 /* MarkdownWritingView.swift in Sources */,
+				CBA011 /* AttachmentReaderView.swift in Sources */,
 				A002 /* AppContainer.swift in Sources */,
 				A003 /* APIModels.swift in Sources */,
 				A004 /* APIClient.swift in Sources */,
@@ -321,6 +372,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A017 /* YeziAppTests.swift in Sources */,
+				CBA009 /* CreationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -341,6 +393,8 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
@@ -362,7 +416,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 24;
 				DEVELOPMENT_TEAM = DR2TNGTRAJ;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -384,7 +438,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 24;
 				DEVELOPMENT_TEAM = DR2TNGTRAJ;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = YeziApp/Info.plist;

@@ -163,6 +163,21 @@ final class YeziAppTests: XCTestCase {
         XCTAssertTrue(marker?.shuffle == true)
     }
 
+    func testMusicFoldMarkerMatchesWebsiteFormat() {
+        let song = MarkdownParser.makeMusicSpec(id: "ABC123", type: "song", folded: true, title: "晴天", artist: "周杰伦")
+        XCTAssertTrue(song.hasPrefix("qqvip:ABC123:song:fold:meta-"))
+        XCTAssertEqual(MarkdownParser.musicMarker(from: song)?.title, "晴天")
+        XCTAssertEqual(MarkdownParser.musicMarker(from: song)?.artist, "周杰伦")
+        XCTAssertEqual(MarkdownParser.musicMarker(from: song)?.folded, true)
+
+        let playlist = MarkdownParser.makeMusicSpec(id: "9750959088", type: "playlist", shuffle: true, folded: true, title: "歌单")
+        XCTAssertEqual(playlist, "qqvip:9750959088:playlist:random:fold")
+        XCTAssertEqual(MarkdownParser.musicMarker(from: playlist)?.shuffle, true)
+        XCTAssertEqual(MarkdownParser.musicMarker(from: playlist)?.folded, true)
+        XCTAssertEqual(MarkdownParser.musicMarker(from: "qqvip:ABC123:song:collapsed")?.folded, true)
+        XCTAssertNil(MarkdownParser.musicMarker(from: "qqvip:ABC123:song:random:fold:meta-extra"))
+    }
+
     func testMarkdownParserRendersNativeVideoMarkers() {
         let blocks = MarkdownParser.parse("!video:https://cdn.example.com/demo.mp4\n\n```video\nhttps://cdn.example.com/demo.m3u8\n```")
         let urls = blocks.compactMap { block -> String? in

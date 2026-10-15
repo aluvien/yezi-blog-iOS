@@ -32,6 +32,13 @@ enum APIError: LocalizedError, Sendable {
     }
 }
 
+func isRequestCancellation(_ error: Error) -> Bool {
+    if error is CancellationError { return true }
+    if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+    if let apiError = error as? APIError, apiError.isCancellation { return true }
+    return (error as NSError).domain == String(reflecting: CancellationError.self)
+}
+
 private func decodingFailureMessage(_ error: Error) -> String {
     guard let decodingError = error as? DecodingError else {
         return error.localizedDescription
@@ -184,12 +191,10 @@ final class APIClient: @unchecked Sendable {
             if cacheable { await responseCache.store(data, for: cacheKey) }
             return data
         } catch {
+            if isRequestCancellation(error) || Task.isCancelled { throw CancellationError() }
             if cacheable, let cached = await responseCache.data(for: cacheKey) {
                 await diagnostics.record("网络请求失败，已使用公开离线缓存：\(url.path)")
                 return cached
-            }
-            if let urlError = error as? URLError, urlError.code == .cancelled {
-                throw CancellationError()
             }
             if let apiError = error as? APIError { throw apiError }
             logger.error("API request failed: \(url.path, privacy: .public)")
@@ -525,6 +530,23 @@ final class AdminAPIClient: @unchecked Sendable {
         return try makePage(envelope, page: page, limit: limit)
     }
 
+    func downloadAttachment(path: String) async throws -> URL {
+        guard let url = URL(string: path, relativeTo: siteRoot)?.absoluteURL,
+              ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { throw APIError.invalidURL }
+        do {
+            let (temporaryURL, response) = try await session.download(from: url)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                try? FileManager.default.removeItem(at: temporaryURL)
+                throw APIError.http(status: (response as? HTTPURLResponse)?.statusCode ?? 0, message: "文件无法下载，请稍后重试")
+            }
+            return temporaryURL
+        } catch {
+            if isRequestCancellation(error) || Task.isCancelled { throw CancellationError() }
+            if let apiError = error as? APIError { throw apiError }
+            throw APIError.transport(Self.userFacingTransportMessage(for: error))
+        }
+    }
+
     func deleteAttachment(id: Int) async throws {
         _ = try await sendWithoutBody(method: "DELETE", path: "attachments/\(id)")
     }
@@ -641,6 +663,19 @@ final class AdminAPIClient: @unchecked Sendable {
             url: makeSiteURL(path: "api/music/qq", queryItems: [
                 URLQueryItem(name: "id", value: id),
                 URLQueryItem(name: "type", value: "track"),
+            ]),
+            body: nil
+        )
+        return try decodeDirect(response, as: AdminMusicTrack.self)
+    }
+
+    /// Song details do not depend on resolving a playable audio URL.
+    func fetchQQMusicMetadata(id: String) async throws -> AdminMusicTrack {
+        let response = try await requestData(
+            method: "GET",
+            url: makeSiteURL(path: "api/music/qq", queryItems: [
+                URLQueryItem(name: "id", value: id),
+                URLQueryItem(name: "type", value: "metadata"),
             ]),
             body: nil
         )
@@ -917,15 +952,11 @@ final class AdminAPIClient: @unchecked Sendable {
 
     private func decodeEnvelope<Value: Decodable & Sendable>(_ data: Data, as type: Value.Type) throws -> AdminEnvelope<Value> {
         do {
-            return try decoder.decode(AdminEnvelope<Value>.self, from: data)
-        } catch {
-            // Some deployed admin endpoints return the resource directly
-            // instead of wrapping it in {"data": ...}. Accept both shapes so
-            // one backend response does not turn a working page into a
-            // misleading "format not recognized" error.
-            if let direct = try? decoder.decode(Value.self, from: data) {
-                return AdminEnvelope(data: direct, meta: nil)
+            if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], object.keys.contains("data") {
+                return try decoder.decode(AdminEnvelope<Value>.self, from: data)
             }
+            return AdminEnvelope(data: try decoder.decode(Value.self, from: data), meta: nil)
+        } catch {
             throw APIError.decoding(decodingFailureMessage(error))
         }
     }
@@ -955,7 +986,8 @@ final class AdminAPIClient: @unchecked Sendable {
     }
 
     private func makePage<Value>(_ envelope: AdminEnvelope<[Value]>, page: Int, limit: Int) throws -> AdminPage<Value> {
-        AdminPage(items: envelope.data ?? [], meta: envelope.meta ?? AdminPaginationMeta(page: page, limit: limit, total: envelope.data?.count ?? 0, totalPages: 1))
+        let items = try requireData(envelope)
+        return AdminPage(items: items, meta: envelope.meta ?? AdminPaginationMeta(page: page, limit: limit, total: nil, totalPages: items.count < limit ? page : page + 1))
     }
 
     private func makeURL(path: String, queryItems: [URLQueryItem] = []) -> URL {
@@ -1002,9 +1034,7 @@ final class AdminAPIClient: @unchecked Sendable {
             guard !data.isEmpty else { throw APIError.emptyData }
             return data
         } catch {
-            if let urlError = error as? URLError, urlError.code == .cancelled {
-                throw CancellationError()
-            }
+            if isRequestCancellation(error) || Task.isCancelled { throw CancellationError() }
             if let apiError = error as? APIError { throw apiError }
             throw APIError.transport(Self.userFacingTransportMessage(for: error))
         }
@@ -1172,9 +1202,9 @@ struct AdminPaginationMeta: Decodable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case page, limit, total, totalPages, count, pages
-        case currentPage = "current_page"
-        case perPage = "per_page"
-        case totalCount = "total_count"
+        case currentPage, currentPageSnake = "current_page"
+        case perPage, perPageSnake = "per_page"
+        case totalCount, totalCountSnake = "total_count"
         case totalPagesSnake = "total_pages"
     }
 
@@ -1182,10 +1212,13 @@ struct AdminPaginationMeta: Decodable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         page = try container.decodeIfPresent(Int.self, forKey: .page)
             ?? container.decodeIfPresent(Int.self, forKey: .currentPage)
+            ?? container.decodeIfPresent(Int.self, forKey: .currentPageSnake)
         limit = try container.decodeIfPresent(Int.self, forKey: .limit)
             ?? container.decodeIfPresent(Int.self, forKey: .perPage)
+            ?? container.decodeIfPresent(Int.self, forKey: .perPageSnake)
         total = try container.decodeIfPresent(Int.self, forKey: .total)
             ?? container.decodeIfPresent(Int.self, forKey: .totalCount)
+            ?? container.decodeIfPresent(Int.self, forKey: .totalCountSnake)
             ?? container.decodeIfPresent(Int.self, forKey: .count)
         totalPages = try container.decodeIfPresent(Int.self, forKey: .totalPages)
             ?? container.decodeIfPresent(Int.self, forKey: .totalPagesSnake)
@@ -1317,14 +1350,16 @@ struct AdminPostDetail: Decodable, Identifiable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decodeIfPresent(Int.self, forKey: .id) ?? 0
-        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
-        slug = try container.decodeIfPresent(String.self, forKey: .slug) ?? ""
-        content = try container.decodeIfPresent(String.self, forKey: .content) ?? ""
+        id = try container.decode(Int.self, forKey: .id)
+        guard id > 0 else { throw DecodingError.dataCorruptedError(forKey: .id, in: container, debugDescription: "无效文章 ID") }
+        title = try container.decode(String.self, forKey: .title)
+        slug = try container.decode(String.self, forKey: .slug)
+        content = try container.decode(String.self, forKey: .content)
         cover = try container.decodeIfPresent(String.self, forKey: .cover)
         category = try container.decodeIfPresent(String.self, forKey: .category) ?? ""
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
-        status = try container.decodeIfPresent(String.self, forKey: .status) ?? "draft"
+        status = try container.decode(String.self, forKey: .status)
+        guard ["draft", "published"].contains(status) else { throw DecodingError.dataCorruptedError(forKey: .status, in: container, debugDescription: "未知文章状态") }
         createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
             ?? container.decodeIfPresent(String.self, forKey: .createdSnake)
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
@@ -1523,6 +1558,7 @@ struct AdminMusicTrack: Decodable, Identifiable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case mid, songmid, songMid
+        case key
         case id, songid, songId
         case name, songname, songName
         case artist, singer, singerName, singerSnake = "singer_name"
@@ -1536,7 +1572,14 @@ struct AdminMusicTrack: Decodable, Identifiable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        mid = Self.firstString([.mid, .songmid, .songMid, .id, .songid, .songId], from: container) ?? ""
+        let playbackKey = try container.decodeIfPresent(String.self, forKey: .key)
+        let keyMID = playbackKey.flatMap { key -> String? in
+            guard key.hasPrefix("qqvip:"), !key.dropFirst(6).isEmpty else { return nil }
+            let value = String(key.dropFirst(6))
+            guard value.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) && $0.isASCII || $0 == "-" || $0 == "_" }) else { return nil }
+            return value
+        }
+        mid = Self.firstString([.mid, .songmid, .songMid, .id, .songid, .songId], from: container) ?? keyMID ?? ""
         name = Self.firstString([.name, .songname, .songName], from: container) ?? ""
         artist = Self.firstString([.artist, .singer, .singerName, .singerSnake], from: container) ?? ""
         album = Self.firstString([.album, .albumname, .albumName], from: container) ?? ""

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yezi · 原生视觉验收</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; color: #18201b; background: #f4f5f2; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { max-width: 1280px; margin: auto; padding: 48px 28px; }
+    .eyebrow { font-size: 12px; letter-spacing: .18em; color: #2d7558; font-weight: 650; }
+    h1 { font-size: clamp(30px, 4vw, 48px); letter-spacing: -.04em; margin: 14px 0; }
+    .intro { max-width: 760px; line-height: 1.8; color: #657168; }
+    nav { display: flex; gap: 12px; flex-wrap: wrap; margin: 24px 0 38px; }
+    a { color: #2d7558; text-underline-offset: 4px; }
+    nav a { min-height: 44px; display: inline-flex; align-items: center; padding: 0 18px; border-radius: 24px; background: #dceee3; text-decoration: none; font-size: 14px; }
+    a:focus-visible { outline: 3px solid #2d7558; outline-offset: 5px; }
+    .gallery { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px 28px; }
+    figure { margin: 0; min-width: 0; }
+    figure a { display: block; border-radius: 20px; overflow: hidden; background: white; border: 1px solid #e1e6e0; }
+    img { display: block; width: 100%; height: auto; }
+    figcaption { padding: 16px 2px 0; }
+    figcaption strong { font-size: 17px; display: block; margin-bottom: 6px; }
+    figcaption span { font-size: 14px; line-height: 1.7; color: #657168; }
+    aside { margin-top: 40px; padding: 22px; background: #e9eee7; border-radius: 18px; line-height: 1.8; color: #526359; }
+    @media (max-width: 900px) { .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 550px) { main { padding: 32px 20px; } .gallery { grid-template-columns: 1fr; gap: 32px; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">YEZI / NATIVE REVIEW</div>
+  <h1>从想法开始，把日常留下。</h1>
+  <p class="intro">这不是网页模拟的手机界面：以下是 SwiftUI 实现在 iOS 27 模拟器上的真实截图。所有内容来自离线演示数据，未上传或发布到你的站点。主要页面采用 375pt 小屏，点击图片可查看原始尺寸。</p>
+  <nav>
+    <a href="interaction-20261015/index.html">查看 10 月 15 日阅读与管理改版</a>
+    <a href="moment-first-preview.html">打开可点击设计样稿</a>
+    <a href="implementation-review.md">验收记录与验证边界</a>
+    <a href="moment-first-redesign.md">完整设计基线</a>
+    <a href="screenshots/native-composer-375-accessibility.png">大字号实拍</a>
+    <a href="screenshots/native-composer-390-light.png">390pt实拍</a>
+    <a href="screenshots/native-composer-air-light.png">iPhone Air实拍</a>
+  </nav>
+  <section class="gallery" aria-label="原生界面截图">
+    <figure><a href="screenshots/native-feed-375-light.png"><img src="screenshots/native-feed-375-light.png" alt="想法首页，文字、照片和音乐入口，以及继续上次记录"></a><figcaption><strong>01 / 想法优先</strong><span>默认落在想法；文字、照片和音乐入口直接进入同一创作流程。</span></figcaption></figure>
+    <figure><a href="screenshots/native-composer-375-light.png"><img src="screenshots/native-composer-375-light.png" alt="浅色想法编辑器，三列图片、上传状态和音乐卡片"></a><figcaption><strong>02 / 随时记录</strong><span>独立顶栏、可见发布按钮、本机保存状态，以及逐张图片操作。</span></figcaption></figure>
+    <figure><a href="screenshots/native-music-375-light.png"><img src="screenshots/native-music-375-light.png" alt="歌曲和歌单选择器，搜索、最近添加与手动输入"></a><figcaption><strong>03 / 音乐更近</strong><span>歌曲与歌单独立搜索，选择和试听分开；最近添加按站点保存。</span></figcaption></figure>
+    <figure><a href="screenshots/native-article-375-light.png"><img src="screenshots/native-article-375-light.png" alt="内容优先的文章编辑器，标题、正文及底部创作工具"></a><figcaption><strong>04 / 文章专注写作</strong><span>正文成为主体；分类、封面、Slug、附件和引用收进发布设置。</span></figcaption></figure>
+    <figure><a href="screenshots/native-drafts-375-light.png"><img src="screenshots/native-drafts-375-light.png" alt="本机草稿列表，显示想法与文章摘要、时间、图片和音乐数量"></a><figcaption><strong>05 / 未完成也安心</strong><span>本机草稿跨进程恢复，想法与文章清晰区分，删除需要确认。</span></figcaption></figure>
+    <figure><a href="screenshots/native-composer-375-dark.png"><img src="screenshots/native-composer-375-dark.png" alt="深色想法编辑器，绿色主按钮使用高对比深色文字"></a><figcaption><strong>06 / 深色同样清楚</strong><span>低亮度背景、独立表面层级，主按钮文字对比约 7.91:1。</span></figcaption></figure>
+  </section>
+  <aside>验证边界：模拟器截图证明实际布局，不代表已在真机完成相机、系统相册、VoiceOver 或真实 QQ 音频服务的端到端测试。具体测试结果和未验证项以验收记录为准。</aside>
+</main>
+</body>
+</html>
