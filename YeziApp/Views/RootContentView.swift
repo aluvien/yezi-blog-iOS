@@ -4136,7 +4136,8 @@ private struct AdminMoreView: View {
                         }.frame(maxWidth: .infinity, alignment: .leading)
                         Image(systemName: "chevron.right").font(.subheadline.weight(.semibold)).foregroundStyle(CreationDesign.secondary)
                     }.padding(18).background(CreationDesign.surface, in: RoundedRectangle(cornerRadius: 22))
-                }.buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityIdentifier("management.文件管理")
                 VStack(alignment: .leading, spacing: 14) {
                     CreationSectionHeading(title: "常用设置")
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
@@ -4155,7 +4156,7 @@ private struct AdminMoreView: View {
                 }
                 AdminMoreGroup(title: "站点与账号") {
                     AdminMoreNavigationRow(title: "站点概览", subtitle: "统计与最近发布", symbol: "chart.bar.xaxis") { AdminDashboardView(session: session) }
-                    Button { confirmingLogout = true } label: { Label("退出登录 / 切换站点", systemImage: "rectangle.portrait.and.arrow.right").font(.subheadline).frame(maxWidth: .infinity, minHeight: 56) }.foregroundStyle(CreationDesign.secondary)
+                    Button { confirmingLogout = true } label: { Label("退出登录 / 切换站点", systemImage: "rectangle.portrait.and.arrow.right").font(.subheadline).frame(maxWidth: .infinity, minHeight: 56).contentShape(Rectangle()) }.foregroundStyle(CreationDesign.secondary)
                 }
             }.padding(20).padding(.bottom, 12)
         }.background(CreationDesign.canvas).toolbar(.hidden, for: .navigationBar)
@@ -4194,7 +4195,8 @@ private struct AdminMoreView: View {
                 Text(subtitle).font(.caption).foregroundStyle(CreationDesign.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
                 .background(CreationDesign.surface, in: RoundedRectangle(cornerRadius: 20))
-        }.buttonStyle(.plain)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityIdentifier("management.\(title)")
     }
 }
 
@@ -4260,8 +4262,10 @@ private struct AdminMoreNavigationRow<Destination: View>: View {
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 14)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("management.\(title)")
     }
 }
 
@@ -4666,8 +4670,7 @@ private struct AdminAboutManagementView: View {
                             if model.value("about_content").isEmpty {
                                 Text("写下你的介绍、联系方式和站点说明…").font(.body).foregroundStyle(CreationDesign.secondary).padding(.top, 12).allowsHitTesting(false)
                             }
-                            MarkdownWritingView(text: Binding(get: { model.value("about_content") }, set: { model.set("about_content", $0) }), focused: $focused, controller: writing, editable: model.hasLoaded && !model.isSaving, label: "关于页面正文")
-                                .frame(minHeight: 320)
+                            MarkdownWritingView(text: Binding(get: { model.value("about_content") }, set: { model.set("about_content", $0) }), focused: $focused, controller: writing, editable: model.hasLoaded && !model.isSaving, label: "关于页面正文", minimumHeight: 320)
                         }
                     }
                     .disabled(!model.hasLoaded || model.isSaving)
@@ -6709,6 +6712,7 @@ private struct AdminImageView: View {
     let siteRoot: URL
     let size: CGSize
     let cornerRadius: CGFloat
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         Group {
@@ -6716,16 +6720,7 @@ private struct AdminImageView: View {
                 placeholder
             } else if let rawURL,
                       let url = SiteURLResolver(siteRoot: siteRoot).absoluteURL(rawURL) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    case .failure:
-                        placeholder
-                    default:
-                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
+                RemoteImageView(url: url, loader: .shared, maxPixelSize: Int(ceil(max(size.width, size.height) * displayScale))) { placeholder }
             } else {
                 placeholder
             }

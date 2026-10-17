@@ -255,8 +255,8 @@ struct CreationMusicCard: View {
             if let message = audio.message { Text(message).font(.caption).foregroundStyle(CreationDesign.secondary) }
         }.padding(compact ? 8 : 12).background(CreationDesign.soft, in: RoundedRectangle(cornerRadius: compact ? 11 : 16))
             .task(id: music.spec) { await resolveDetails() }
-            .onDisappear { audio.stop() }
-            .onChange(of: scenePhase) { _, phase in if phase != .active { audio.stop() } }
+            .onDisappear { if audio.playingID == music.spec { audio.stop() } }
+            .onChange(of: scenePhase) { _, phase in if phase != .active && audio.playingID == music.spec { audio.stop() } }
     }
 
     private func resolveDetails() async {

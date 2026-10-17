@@ -180,12 +180,14 @@ struct CreationRemoteImage: View {
     let path: String?
     let site: URL
     var contentMode: ContentMode = .fill
+    @Environment(\.displayScale) private var displayScale
     var body: some View {
         GeometryReader { geometry in
-            content.frame(width: geometry.size.width, height: geometry.size.height).clipped()
+            content(maxPixelSize: Int(ceil(min(2048, max(64, max(geometry.size.width, geometry.size.height) * displayScale)))))
+                .frame(width: geometry.size.width, height: geometry.size.height).clipped()
         }
     }
-    private var content: some View {
+    private func content(maxPixelSize: Int) -> some View {
         Group {
             if CreationPreview.isEnabled {
                 ZStack {
@@ -193,7 +195,9 @@ struct CreationRemoteImage: View {
                     Image(systemName: path?.contains("cover") == true ? "music.note" : "leaf.fill").font(.largeTitle).foregroundStyle(CreationDesign.accent)
                 }
             } else if let path, let url = URL(string: path, relativeTo: site)?.absoluteURL, ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
-                AsyncImage(url: url) { image in image.resizable().aspectRatio(contentMode: contentMode) } placeholder: { CreationDesign.soft.overlay { Image(systemName: "photo").foregroundStyle(CreationDesign.secondary) } }
+                RemoteImageView(url: url, loader: .shared, contentMode: contentMode, maxPixelSize: maxPixelSize) {
+                    CreationDesign.soft.overlay { Image(systemName: "photo").foregroundStyle(CreationDesign.secondary) }
+                }
             } else { CreationDesign.soft.overlay { Image(systemName: "photo").foregroundStyle(CreationDesign.secondary) } }
         }
         .clipped()

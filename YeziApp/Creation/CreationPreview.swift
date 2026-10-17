@@ -72,11 +72,12 @@ enum CreationPreview {
         let site = "https://creation-preview.invalid"
         let store = CreationDraftStore.shared
         guard (try? await store.list(site: site).isEmpty) == true else { return }
+        let emptyMoment = ProcessInfo.processInfo.arguments.contains("--preview-empty-moment")
         var moment = CreationDraft(site: site, kind: .moment)
         moment.text = "傍晚的风终于凉下来。\n走得慢一点，就会发现路边的小小风景。"
         let music = CreationMusic(spec: MarkdownParser.makeMusicSpec(id: "003OUlho2HcRHC", type: "song", title: "晴天", artist: "周杰伦 · 叶惠美", cover: "/cover.jpg"))
         moment.music = [music]
-        for index in 0..<3 {
+        for index in 0..<3 where !emptyMoment {
             let id = UUID()
             let renderer = UIGraphicsImageRenderer(size: CGSize(width: 640, height: 460))
             let image = renderer.image { context in
@@ -90,7 +91,7 @@ enum CreationPreview {
                 moment.media.append(CreationMedia(id: id, filename: filename, remotePath: "/uploads/preview-\(index).jpg", state: .uploaded))
             }
         }
-        try? await store.save(moment)
+        if !emptyMoment { try? await store.save(moment) }
         try? await store.remember(music, site: site)
         for (id, title, artist) in [("002J4UUk29y8BY", "稻香", "周杰伦"), ("004Z8Ihr0JIu5s", "旅行的意义", "陈绮贞")] {
             try? await store.remember(CreationMusic(spec: MarkdownParser.makeMusicSpec(id: id, type: "song", title: title, artist: artist, cover: "/cover.jpg")), site: site)

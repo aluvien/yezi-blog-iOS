@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		UIA001 /* InteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = UIF001 /* InteractionTests.swift */; };
 		CBA011 /* AttachmentReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI011 /* AttachmentReaderView.swift */; };
 		CBA010 /* MarkdownWritingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI010 /* MarkdownWritingView.swift */; };
 		A001 /* YeziAppApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F001 /* YeziAppApp.swift */; };
@@ -50,6 +51,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		UIF001 /* InteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionTests.swift; sourceTree = "<group>"; };
+		UIF002 /* YeziAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YeziAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CFI011 /* AttachmentReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentReaderView.swift; sourceTree = "<group>"; };
 		CFI010 /* MarkdownWritingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownWritingView.swift; sourceTree = "<group>"; };
 		CFI001 /* CreationDraftStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationDraftStore.swift; sourceTree = "<group>"; };
@@ -103,6 +106,12 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		UIG001 /* YeziAppUITests */ = {
+			isa = PBXGroup;
+			children = (UIF001 /* InteractionTests.swift */,);
+			path = YeziAppUITests;
+			sourceTree = "<group>";
+		};
 		CG001 /* Creation */ = {
 			isa = PBXGroup;
 			children = (
@@ -214,6 +223,7 @@
 			children = (
 				G001 /* YeziApp */,
 				G011 /* YeziAppTests */,
+				UIG001 /* YeziAppUITests */,
 				G012 /* Products */,
 			);
 			name = YeziApp;
@@ -233,6 +243,7 @@
 			children = (
 				F018 /* YeziApp.app */,
 				F019 /* YeziAppTests.xctest */,
+				UIF002 /* YeziAppUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -250,6 +261,17 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		UIN001 /* YeziAppUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = UIC001;
+			buildPhases = (UIP001 /* Sources */,);
+			buildRules = ();
+			dependencies = (UID001 /* PBXTargetDependency */,);
+			name = YeziAppUITests;
+			productName = YeziAppUITests;
+			productReference = UIF002 /* YeziAppUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		N001 /* YeziApp */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = C001 /* Build configuration list for PBXNativeTarget "YeziApp" */;
@@ -293,6 +315,7 @@
 				BuildIndependentTargetsInParallel = 1;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
+					UIN001 = {CreatedOnToolsVersion = 27.0; TestTargetID = N001;};
 					N001 = {
 						CreatedOnToolsVersion = 27.0;
 					};
@@ -317,6 +340,7 @@
 			targets = (
 				N001 /* YeziApp */,
 				N002 /* YeziAppTests */,
+				UIN001 /* YeziAppUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -334,6 +358,12 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		UIP001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (UIA001 /* InteractionTests.swift in Sources */,);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		P001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -379,6 +409,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		UID001 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = N001 /* YeziApp */; };
 		D001 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = N001 /* YeziApp */;
@@ -387,6 +418,38 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		UIBC001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = DR2TNGTRAJ;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = me.aluvien.yeziblog.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = YeziApp;
+			};
+			name = Debug;
+		};
+		UIBC002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = DR2TNGTRAJ;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = me.aluvien.yeziblog.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = YeziApp;
+			};
+			name = Release;
+		};
 		BC001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -416,7 +479,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_TEAM = DR2TNGTRAJ;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -438,7 +501,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_TEAM = DR2TNGTRAJ;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = YeziApp/Info.plist;
@@ -490,6 +553,12 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		UIC001 /* Build configuration list for YeziAppUITests */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (UIBC001 /* Debug */, UIBC002 /* Release */,);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		C000 /* Build configuration list for PBXProject "YeziApp" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

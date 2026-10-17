@@ -116,7 +116,12 @@ final class MarkdownWritingController: ObservableObject {
         refresh()
         return true
     }
-    func refresh() { canUndo = textView?.undoManager?.canUndo ?? false; canRedo = textView?.undoManager?.canRedo ?? false }
+    func refresh() {
+        let nextCanUndo = textView?.undoManager?.canUndo ?? false
+        let nextCanRedo = textView?.undoManager?.canRedo ?? false
+        if canUndo != nextCanUndo { canUndo = nextCanUndo }
+        if canRedo != nextCanRedo { canRedo = nextCanRedo }
+    }
 }
 
 struct MarkdownWritingView: UIViewRepresentable {
@@ -125,6 +130,7 @@ struct MarkdownWritingView: UIViewRepresentable {
     let controller: MarkdownWritingController
     var editable = true
     var label = "文章正文"
+    var minimumHeight: CGFloat = 0
 
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView()
@@ -146,6 +152,8 @@ struct MarkdownWritingView: UIViewRepresentable {
     }
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.isUpdatingView = true
+        defer { context.coordinator.isUpdatingView = false }
         controller.textView = view
         view.isEditable = editable
         if view.text != text && view.markedTextRange == nil {
@@ -159,13 +167,26 @@ struct MarkdownWritingView: UIViewRepresentable {
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
         guard let width = proposal.width else { return nil }
-        return uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let contentSize = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        // The actual text view must fill the writing area so blank space accepts taps.
+        return CGSize(width: width, height: max(minimumHeight, contentSize.height))
     }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: MarkdownWritingView
+        var isUpdatingView = false
         init(_ parent: MarkdownWritingView) { self.parent = parent }
         func textViewDidChange(_ view: UITextView) {
+            if isUpdatingView {
+                // UIKit can end editing synchronously in updateUIView. Commit
+                // delegate changes after SwiftUI finishes its update instead
+                // of delaying the actual keyboard dismissal.
+                DispatchQueue.main.async { [weak self, weak view] in
+                    guard let self, let view, self.parent.controller.textView === view else { return }
+                    self.textViewDidChange(view)
+                }
+                return
+            }
             guard view.markedTextRange == nil else { return }
             if parent.text != view.text { parent.text = view.text }
             view.invalidateIntrinsicContentSize()
@@ -187,8 +208,8 @@ struct MarkdownWritingView: UIViewRepresentable {
                 }
             }
         }
-        func textViewDidBeginEditing(_ view: UITextView) { parent.focused = true }
-        func textViewDidEndEditing(_ view: UITextView) { parent.focused = false; textViewDidChange(view) }
+        func textViewDidBeginEditing(_ view: UITextView) { if !isUpdatingView && !parent.focused { parent.focused = true } }
+        func textViewDidEndEditing(_ view: UITextView) { if !isUpdatingView && parent.focused { parent.focused = false }; textViewDidChange(view) }
     }
 }
 

@@ -55,6 +55,16 @@ xcrun simctl launch <device-id> me.aluvien.yeziblog --creation-preview --preview
 
 ## 回归验证
 
+`YeziInteraction` scheme 提供独立的原生界面回归：从首页选择音乐后继续输入、收起键盘后点击正文留白再次输入、点击管理列表文字与箭头间的空白、点击设置卡片边距。测试使用离线演示账户和独立临时草稿目录，不访问生产 API，也不复用真实草稿。运行方式：
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+xcodebuild -project YeziApp.xcodeproj -scheme YeziInteraction \
+  -destination 'platform=iOS Simulator,id=<device-id>' \
+  -derivedDataPath /private/tmp/YeziInteractionFixDerivedData \
+  CODE_SIGNING_ALLOWED=NO test
+```
+
 `YeziAppTests/CreationTests.swift` 全部网络交互使用 URLProtocol fixtures，覆盖草稿重建/缺失/损坏、站点隔离、终态和清空保存、四种想法 payload、双击/超时、图片并发/在途移除/定向重试、音乐查询 generation、封面与引用、严格响应/分页、文章 POST→PATCH 及远端已发布状态保护。原有测试保持运行。
 
 ```bash

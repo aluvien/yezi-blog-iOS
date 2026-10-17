@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import ImageIO
 import Network
 import OSLog
 import Security
@@ -248,85 +249,181 @@ final class VisitorIdentity: @unchecked Sendable {
 // MARK: - Image loading
 
 actor ImageLoader {
-    private var memory: [URL: Data] = [:]
-    private let session: URLSession
+    static let shared = ImageLoader()
 
-    init(urlCache: URLCache? = nil) {
-        let configuration = URLSessionConfiguration.default
-        configuration.urlCache = urlCache ?? URLCache(memoryCapacity: 20 * 1024 * 1024, diskCapacity: 100 * 1024 * 1024, diskPath: "YeziImageCache")
-        configuration.requestCachePolicy = .useProtocolCachePolicy
-        session = URLSession(configuration: configuration)
+    private struct Key: Hashable, Sendable {
+        let url: URL
+        let pixels: Int
+        var cacheKey: NSString { "\(pixels):\(url.absoluteString)" as NSString }
+    }
+    private struct Flight {
+        let id: UUID
+        let task: Task<CGImage, Error>
+        var consumers: Set<UUID>
+    }
+    private struct Waiting {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
     }
 
-    func data(for url: URL, forceReload: Bool = false) async throws -> Data {
-        if !forceReload, let cached = memory[url] { return cached }
-        var request = URLRequest(url: url)
+    // Cache decoded thumbnails by their actual memory cost; never retain an
+    // unbounded dictionary of original image bytes.
+    private let images = NSCache<NSString, CGImage>()
+    private let session: URLSession
+    private let maximumConcurrentLoads: Int
+    private var flights: [Key: Flight] = [:]
+    private var activeLoads = 0
+    private var waiting: [Waiting] = []
+
+    init(urlCache: URLCache? = nil, session: URLSession? = nil, maximumConcurrentLoads: Int = 4) {
+        if let session { self.session = session }
+        else {
+            let configuration = URLSessionConfiguration.default
+            configuration.urlCache = urlCache ?? URLCache(memoryCapacity: 20 * 1024 * 1024, diskCapacity: 100 * 1024 * 1024, diskPath: "YeziImageCache")
+            configuration.requestCachePolicy = .useProtocolCachePolicy
+            self.session = URLSession(configuration: configuration)
+        }
+        self.maximumConcurrentLoads = max(1, maximumConcurrentLoads)
+        images.totalCostLimit = 32 * 1024 * 1024
+        images.countLimit = 96
+    }
+
+    func image(for url: URL, maxPixelSize: Int = 1200, forceReload: Bool = false) async throws -> CGImage {
+        try Task.checkCancellation()
+        // Small geometry changes reuse the same size bucket.
+        let pixels = min(2048, max(64, ((maxPixelSize + 63) / 64) * 64))
+        let key = Key(url: url, pixels: pixels)
+        if !forceReload, let image = images.object(forKey: key.cacheKey) { return image }
+        let consumer = UUID()
+        let flight: Flight
+        if var existing = flights[key] {
+            existing.consumers.insert(consumer)
+            flights[key] = existing
+            flight = existing
+        } else {
+            let id = UUID()
+            let task = Task { try await self.download(key, id: id, forceReload: forceReload) }
+            flight = Flight(id: id, task: task, consumers: [consumer])
+            flights[key] = flight
+        }
+        return try await withTaskCancellationHandler {
+            defer { releaseConsumer(consumer, key: key, flightID: flight.id) }
+            let image = try await flight.task.value
+            try Task.checkCancellation()
+            return image
+        } onCancel: {
+            Task { await self.releaseConsumer(consumer, key: key, flightID: flight.id) }
+        }
+    }
+
+    private func download(_ key: Key, id: UUID, forceReload: Bool) async throws -> CGImage {
+        try await acquireSlot(id: id)
+        defer { releaseSlot() }
+        try Task.checkCancellation()
+        var request = URLRequest(url: key.url)
         request.cachePolicy = forceReload ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy
         let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
             throw URLError(.badServerResponse)
         }
-        memory[url] = data
-        return data
+        // ImageIO downsamples and decodes on this actor, outside the main
+        // actor. No full-resolution UIImage is constructed for a small card.
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: key.pixels,
+                kCGImageSourceShouldCacheImmediately: true,
+              ] as CFDictionary) else { throw URLError(.cannotDecodeContentData) }
+        try Task.checkCancellation()
+        guard flights[key]?.id == id else { throw CancellationError() }
+        images.setObject(image, forKey: key.cacheKey, cost: image.bytesPerRow * image.height)
+        return image
+    }
+
+    private func releaseConsumer(_ consumer: UUID, key: Key, flightID: UUID) {
+        guard var flight = flights[key], flight.id == flightID else { return }
+        flight.consumers.remove(consumer)
+        if flight.consumers.isEmpty {
+            flight.task.cancel()
+            flights.removeValue(forKey: key)
+        } else { flights[key] = flight }
+    }
+
+    private func acquireSlot(id: UUID) async throws {
+        try Task.checkCancellation()
+        if activeLoads < maximumConcurrentLoads { activeLoads += 1; return }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiting.append(Waiting(id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiting(id: id) }
+        }
+    }
+
+    private func cancelWaiting(id: UUID) {
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
+        waiting.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
+
+    private func releaseSlot() {
+        if waiting.isEmpty { activeLoads -= 1 }
+        else { waiting.removeFirst().continuation.resume() }
     }
 
     func removeAll() {
-        memory.removeAll()
+        for flight in flights.values { flight.task.cancel() }
+        flights.removeAll()
+        images.removeAllObjects()
         session.configuration.urlCache?.removeAllCachedResponses()
     }
 }
 
 @MainActor
 final class RemoteImageModel: ObservableObject {
-    @Published private(set) var data: Data?
+    @Published private(set) var image: UIImage?
     @Published private(set) var isLoading = false
     @Published private(set) var didFail = false
 
     private let loader: ImageLoader
     private var url: URL?
-    private var loadTask: Task<Void, Never>?
+    private var generation = 0
 
-    init(url: URL?, loader: ImageLoader) {
-        self.url = url
+    init(loader: ImageLoader) {
         self.loader = loader
     }
 
-    func update(url: URL?) {
-        guard self.url != url else { return }
-        loadTask?.cancel()
-        self.url = url
-        data = nil
-        didFail = false
-        load()
+    func unload() {
+        generation += 1
+        image = nil
+        isLoading = false
     }
 
-    func load(forceReload: Bool = false) {
-        loadTask?.cancel()
+    func load(url: URL?, maxPixelSize: Int, forceReload: Bool = false) async {
+        guard !Task.isCancelled else { return }
+        generation += 1
+        let token = generation
+        if self.url != url { image = nil }
+        self.url = url
+        didFail = false
         guard let url else {
             didFail = true
+            isLoading = false
             return
         }
         isLoading = true
-        didFail = false
-        let loader = loader
-        loadTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let data = try await loader.data(for: url, forceReload: forceReload)
-                guard !Task.isCancelled else { return }
-                self.data = data
-                self.isLoading = false
-            } catch {
-                guard !Task.isCancelled else { return }
-                self.data = nil
-                self.didFail = true
-                self.isLoading = false
-            }
+        defer { if token == generation { isLoading = false } }
+        do {
+            let decoded = try await loader.image(for: url, maxPixelSize: maxPixelSize, forceReload: forceReload)
+            guard token == generation, !Task.isCancelled else { return }
+            image = UIImage(cgImage: decoded)
+        } catch {
+            guard token == generation, !Task.isCancelled, !isRequestCancellation(error) else { return }
+            image = nil
+            didFail = true
         }
-    }
-
-    deinit {
-        loadTask?.cancel()
     }
 }
 
@@ -334,20 +431,29 @@ struct RemoteImageView<Placeholder: View>: View {
     let url: URL?
     let contentMode: ContentMode
     let loader: ImageLoader
+    let maxPixelSize: Int
     @ViewBuilder let placeholder: () -> Placeholder
     @StateObject private var model: RemoteImageModel
+    @State private var retry = 0
 
-    init(url: URL?, loader: ImageLoader, contentMode: ContentMode = .fill, @ViewBuilder placeholder: @escaping () -> Placeholder) {
+    private struct Request: Hashable {
+        let url: URL?
+        let pixels: Int
+        let retry: Int
+    }
+
+    init(url: URL?, loader: ImageLoader, contentMode: ContentMode = .fill, maxPixelSize: Int = 1200, @ViewBuilder placeholder: @escaping () -> Placeholder) {
         self.url = url
         self.loader = loader
         self.contentMode = contentMode
+        self.maxPixelSize = min(2048, max(64, ((maxPixelSize + 63) / 64) * 64))
         self.placeholder = placeholder
-        _model = StateObject(wrappedValue: RemoteImageModel(url: url, loader: loader))
+        _model = StateObject(wrappedValue: RemoteImageModel(loader: loader))
     }
 
     var body: some View {
         Group {
-            if let data = model.data, let image = UIImage(data: data) {
+            if let image = model.image {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
@@ -361,7 +467,7 @@ struct RemoteImageView<Placeholder: View>: View {
                 ZStack {
                     placeholder()
                     Button {
-                        model.load(forceReload: true)
+                        retry += 1
                     } label: {
                         Label("重试", systemImage: "arrow.clockwise")
                             .font(.caption)
@@ -376,10 +482,10 @@ struct RemoteImageView<Placeholder: View>: View {
             }
         }
         .clipped()
-        .task(id: url) {
-            model.update(url: url)
-            if model.data == nil && !model.isLoading && !model.didFail { model.load() }
+        .task(id: Request(url: url, pixels: maxPixelSize, retry: retry)) {
+            await model.load(url: url, maxPixelSize: maxPixelSize, forceReload: retry > 0)
         }
+        .onDisappear { model.unload() }
     }
 }
 

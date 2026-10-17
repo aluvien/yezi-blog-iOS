@@ -13,6 +13,7 @@ private struct FixtureReply: Sendable {
     init(_ json: String, status: Int = 200, delay: TimeInterval = 0, failure: URLError.Code? = nil, rawCancellation: Bool = false) {
         body = Data(json.utf8); self.status = status; self.delay = delay; self.failure = failure; self.rawCancellation = rawCancellation
     }
+    init(data: Data, delay: TimeInterval = 0) { body = data; self.delay = delay }
 }
 
 private final class CreationFixtureServer: @unchecked Sendable {
@@ -72,6 +73,202 @@ private actor UploadAudit {
     func start(_ filename: String) { active += 1; maximum = max(active, maximum); filenames.append(filename) }
     func finish() { active -= 1 }
     func shouldFail(_ filename: String) -> Bool { if failedOnce.contains(filename) { return false }; failedOnce.insert(filename); return true }
+}
+
+// Delayed replies stay asynchronous so these checks can observe concurrent
+// requests and real URLSession cancellation rather than blocking URLProtocol.
+private final class LoadingFixtureServer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests: [URLRequest] = []
+    private var active: Set<UUID> = []
+    private var peak = 0
+    private var cancellations = 0
+    let host = "\(UUID().uuidString.lowercased()).invalid"
+    let handler: @Sendable (URLRequest) -> FixtureReply
+
+    init(handler: @escaping @Sendable (URLRequest) -> FixtureReply) {
+        self.handler = handler
+        LoadingFixtureProtocol.register(self)
+    }
+    var session: URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [LoadingFixtureProtocol.self]
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
+    }
+    var site: URL { URL(string: "https://\(host)")! }
+    var count: Int { lock.withLock { requests.count } }
+    var maximumActive: Int { lock.withLock { peak } }
+    var cancelled: Int { lock.withLock { cancellations } }
+    func begin(_ request: URLRequest, id: UUID) -> FixtureReply {
+        lock.withLock { requests.append(request); active.insert(id); peak = max(peak, active.count) }
+        return handler(request)
+    }
+    func finish(_ id: UUID, cancelled: Bool) {
+        lock.withLock { if active.remove(id) != nil && cancelled { cancellations += 1 } }
+    }
+}
+
+private final class LoadingFixtureProtocol: URLProtocol, @unchecked Sendable {
+    private static let registryLock = NSLock()
+    nonisolated(unsafe) private static var servers: [String: LoadingFixtureServer] = [:]
+    private let lock = NSLock()
+    private let id = UUID()
+    private var finished = false
+    private var delivery: DispatchWorkItem?
+    private var server: LoadingFixtureServer?
+
+    static func register(_ server: LoadingFixtureServer) { registryLock.withLock { servers[server.host] = server } }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let server = Self.registryLock.withLock({ Self.servers[request.url?.host ?? ""] }) else { return }
+        self.server = server
+        let reply = server.begin(request, id: id)
+        let work = DispatchWorkItem { [self] in
+            guard lock.withLock({ if finished { return false }; finished = true; return true }) else { return }
+            server.finish(id, cancelled: false)
+            let response = HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: nil, headerFields: [:])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: reply.body)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        lock.withLock { delivery = work }
+        DispatchQueue.global().asyncAfter(deadline: .now() + reply.delay, execute: work)
+    }
+    override func stopLoading() {
+        let stopped = lock.withLock {
+            delivery?.cancel()
+            guard !finished else { return false }
+            finished = true
+            return true
+        }
+        if stopped { server?.finish(id, cancelled: true) }
+    }
+}
+
+final class LoadingPerformanceTests: XCTestCase {
+    @MainActor private func imageData() -> Data {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: 2048, height: 1024), format: format).pngData { context in
+            UIColor.green.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 2048, height: 1024))
+        }
+    }
+    @MainActor private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<200 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("加载条件未在两秒内满足")
+    }
+
+    @MainActor func testRemoteImagesDownsampleReuseDecodedImageAndAllowRetry() async throws {
+        let data = imageData()
+        let server = LoadingFixtureServer { _ in FixtureReply(data: data) }
+        let loader = ImageLoader(session: server.session)
+        let url = server.site.appendingPathComponent("photo.png")
+        let first = try await loader.image(for: url, maxPixelSize: 250)
+        let second = try await loader.image(for: url, maxPixelSize: 255)
+        XCTAssertEqual(first.width, 256)
+        XCTAssertEqual(first.height, 128)
+        XCTAssertTrue(first === second)
+        XCTAssertEqual(server.count, 1)
+        _ = try await loader.image(for: url, maxPixelSize: 256, forceReload: true)
+        XCTAssertEqual(server.count, 2)
+        await loader.removeAll()
+        _ = try await loader.image(for: url, maxPixelSize: 256)
+        XCTAssertEqual(server.count, 3)
+    }
+
+    @MainActor func testSimultaneousConsumersShareOneImageRequest() async throws {
+        let data = imageData()
+        let server = LoadingFixtureServer { _ in FixtureReply(data: data, delay: 0.1) }
+        let loader = ImageLoader(session: server.session)
+        let url = server.site.appendingPathComponent("shared.png")
+        async let first = loader.image(for: url, maxPixelSize: 256)
+        async let second = loader.image(for: url, maxPixelSize: 256)
+        let images = try await (first, second)
+        XCTAssertTrue(images.0 === images.1)
+        XCTAssertEqual(server.count, 1)
+    }
+
+    @MainActor func testImageLoadingRespectsConcurrencyLimit() async throws {
+        let data = imageData()
+        let server = LoadingFixtureServer { _ in FixtureReply(data: data, delay: 0.1) }
+        let loader = ImageLoader(session: server.session, maximumConcurrentLoads: 2)
+        let tasks = (0..<6).map { index in
+            Task { try await loader.image(for: server.site.appendingPathComponent("\(index).png"), maxPixelSize: 256) }
+        }
+        for task in tasks { _ = try await task.value }
+        XCTAssertEqual(server.count, 6)
+        XCTAssertEqual(server.maximumActive, 2)
+    }
+
+    @MainActor func testLeavingImageCancelsDownloadAndDoesNotCacheIt() async throws {
+        let data = imageData()
+        let server = LoadingFixtureServer { _ in FixtureReply(data: data, delay: 0.15) }
+        let loader = ImageLoader(session: server.session)
+        let url = server.site.appendingPathComponent("cancel.png")
+        let task = Task { try await loader.image(for: url, maxPixelSize: 256) }
+        try await waitUntil { server.count == 1 }
+        task.cancel()
+        do { _ = try await task.value; XCTFail("离开页面后应取消图片请求") }
+        catch { XCTAssertTrue(isRequestCancellation(error)) }
+        try await waitUntil { server.cancelled == 1 }
+        _ = try await loader.image(for: url, maxPixelSize: 256)
+        XCTAssertEqual(server.count, 2)
+    }
+
+    @MainActor func testReappearingFeedDoesNotReloadUnchangedData() async throws {
+        let server = LoadingFixtureServer { _ in FixtureReply(#"{"data":[{"id":9,"content":"内容","images":[]}],"meta":{"totalPages":1}}"#, delay: 0.1) }
+        let model = CreationFeedModel(api: AdminAPIClient(siteRoot: server.site, session: server.session))
+        let initial = Task { await model.loadIfNeeded() }
+        try await waitUntil { server.count == 1 }
+        await model.loadIfNeeded()
+        await initial.value
+        await model.loadIfNeeded()
+        XCTAssertEqual(server.count, 1)
+        XCTAssertEqual(model.moments.first?.id, 9)
+        await model.load(reset: true)
+        XCTAssertEqual(server.count, 2)
+    }
+
+    @MainActor func testNewArticleSearchCancelsObsoleteRequestAndKeepsLatestResults() async throws {
+        let server = LoadingFixtureServer { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "search" }?.value ?? ""
+            return FixtureReply("{\"data\":[{\"id\":42,\"title\":\"\(query)\",\"slug\":\"post\",\"category\":\"\",\"tags\":[],\"status\":\"published\"}],\"meta\":{\"totalPages\":1}}", delay: query == "old" ? 0.4 : 0.02)
+        }
+        let model = CreationArticlesModel(api: AdminAPIClient(siteRoot: server.site, session: server.session))
+        let old = Task { await model.load(filter: .all, search: "old", reset: true) }
+        try await waitUntil { server.count == 1 }
+        await model.load(filter: .all, search: "new", reset: true)
+        await old.value
+        XCTAssertEqual(model.posts.first?.title, "new")
+        XCTAssertNil(model.error)
+        XCTAssertFalse(model.isLoading)
+        try await waitUntil { server.cancelled == 1 }
+        await model.loadIfNeeded(filter: .all, search: "new")
+        XCTAssertEqual(server.count, 2)
+    }
+
+    @MainActor func testCancelledArticleQueryIsRetriedWhenPageReappears() async throws {
+        let server = LoadingFixtureServer { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "search" }?.value ?? ""
+            return FixtureReply("{\"data\":[{\"id\":42,\"title\":\"\(query)\",\"slug\":\"post\",\"category\":\"\",\"tags\":[],\"status\":\"published\"}],\"meta\":{\"totalPages\":1}}", delay: 0.08)
+        }
+        let model = CreationArticlesModel(api: AdminAPIClient(siteRoot: server.site, session: server.session))
+        await model.load(filter: .all, search: "one", reset: true)
+        let cancelled = Task { await model.load(filter: .all, search: "two", reset: true) }
+        try await waitUntil { server.count == 2 }
+        cancelled.cancel()
+        await cancelled.value
+        await model.loadIfNeeded(filter: .all, search: "two")
+        XCTAssertEqual(server.count, 3)
+        XCTAssertEqual(model.posts.first?.title, "two")
+        XCTAssertNil(model.error)
+    }
 }
 
 private final class FixtureCounter: @unchecked Sendable {

@@ -20,18 +20,28 @@ final class CreationFeedModel: ObservableObject {
     @Published var error: String?
     private var page = 0
     private var generation = 0
+    private var request: Task<AdminPage<AdminMoment>, Error>?
     init(api: AdminAPIClient) { self.api = api }
 
+    func loadIfNeeded() async {
+        guard page == 0, !(isLoading && request?.isCancelled == false) else { return }
+        await load(reset: true)
+    }
+
     func load(reset: Bool = false) async {
-        if reset { generation += 1 }
+        guard !Task.isCancelled else { return }
+        if reset { request?.cancel(); generation += 1 }
         let token = generation
         guard reset || (!isLoading && hasMore) else { return }
         isLoading = true
         error = nil
-        defer { if token == generation { isLoading = false } }
+        defer { if token == generation { isLoading = false; request = nil } }
         let next = reset ? 1 : page + 1
+        let api = api
+        let task = Task { try await api.fetchMoments(page: next) }
+        request = task
         do {
-            let result = try await api.fetchMoments(page: next)
+            let result = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
             guard token == generation, !Task.isCancelled else { return }
             if reset { moments = [] }
             let existing = Set(moments.map(\.id))
@@ -76,6 +86,7 @@ struct MomentFeedView: View {
         model.moments.filter { contentFilter.includes($0) && (search.isEmpty || $0.content.localizedStandardContains(search)) }
     }
     @State private var published = false
+    @State private var refreshAfterEditing = false
     @State private var didPreview = false
 
     init(api: AdminAPIClient, openDrafts: @escaping () -> Void) {
@@ -86,7 +97,7 @@ struct MomentFeedView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            LazyVStack(alignment: .leading, spacing: 20) {
                 CreationPageHeader(title: "絮语", subtitle: "一些日常，一点心事。") {
                     HStack(spacing: 6) {
                         Button { withAnimation { showingSearch.toggle() }; if !showingSearch { search = "" } } label: {
@@ -146,7 +157,7 @@ struct MomentFeedView: View {
             .overlay(alignment: .bottomTrailing) { CreationFloatingButton(title: "写絮语", symbol: "square.and.pencil") { start(.text) } }
             .refreshable { await model.load(reset: true); await loadRecent() }
             .task {
-                await model.load(reset: true)
+                await model.loadIfNeeded()
                 await loadRecent()
                 if CreationPreview.isEnabled && !didPreview {
                     didPreview = true
@@ -154,11 +165,20 @@ struct MomentFeedView: View {
                     if CreationPreview.screen == "music", let recent { route = CreationEditorRoute(draft: recent, intent: .music) }
                 }
             }
-            .fullScreenCover(item: $route, onDismiss: { Task { await model.load(reset: true); await loadRecent() } }) { route in
+            .fullScreenCover(item: $route, onDismiss: {
+                Task {
+                    if refreshAfterEditing { refreshAfterEditing = false; await model.load(reset: true) }
+                    await loadRecent()
+                }
+            }) { route in
                 CreationComposerView(api: api, draft: route.draft, intent: route.intent) {
                     published = true
-                    Task { await model.load(reset: true); await loadRecent(); try? await Task.sleep(for: .seconds(3)); published = false }
+                    refreshAfterEditing = true
                 }
+            }
+            .task(id: published) {
+                guard published else { return }
+                do { try await Task.sleep(for: .seconds(3)); published = false } catch {}
             }
             .confirmationDialog("删除絮语？", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }), presenting: pendingDelete) { moment in
                 Button("删除絮语", role: .destructive) { Task { await model.delete(moment) } }
@@ -246,6 +266,10 @@ struct MomentFeedCard: View {
 
 @MainActor
 final class CreationArticlesModel: ObservableObject {
+    struct Query: Hashable {
+        let filter: AdminPostFilter
+        let search: String
+    }
     let api: AdminAPIClient
     @Published private(set) var posts: [AdminPostSummary] = []
     @Published private(set) var isLoading = false
@@ -253,22 +277,38 @@ final class CreationArticlesModel: ObservableObject {
     @Published var error: String?
     private var page = 0
     private var generation = 0
+    private var request: Task<AdminPage<AdminPostSummary>, Error>?
+    private var activeQuery: Query?
+    private var loadedQuery: Query?
     init(api: AdminAPIClient) { self.api = api }
+    func loadIfNeeded(filter: AdminPostFilter, search: String) async {
+        guard page == 0 || loadedQuery != Query(filter: filter, search: search) else { return }
+        guard !(isLoading && activeQuery == Query(filter: filter, search: search) && request?.isCancelled == false) else { return }
+        await load(filter: filter, search: search, reset: true)
+    }
     func load(filter: AdminPostFilter, search: String, reset: Bool = false) async {
-        if reset { generation += 1 }
+        guard !Task.isCancelled else { return }
+        let query = Query(filter: filter, search: search)
+        guard reset || loadedQuery == query else { return }
+        if reset { request?.cancel(); generation += 1 }
         let token = generation
         guard reset || (!isLoading && hasMore) else { return }
         isLoading = true
         error = nil
-        defer { if token == generation { isLoading = false } }
+        defer { if token == generation { isLoading = false; request = nil } }
         let next = reset ? 1 : page + 1
+        activeQuery = query
+        let api = api
+        let task = Task { try await api.fetchPosts(page: next, status: filter, search: search) }
+        request = task
         do {
-            let response = try await api.fetchPosts(page: next, status: filter, search: search)
+            let response = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
             guard token == generation, !Task.isCancelled else { return }
             if reset { posts = [] }
             let existing = Set(posts.map(\.id))
             posts.append(contentsOf: response.items.filter { !existing.contains($0.id) })
             page = next
+            loadedQuery = query
             hasMore = response.meta.totalPages.map { next < $0 } ?? (response.items.count == 20)
         } catch { if token == generation, !Task.isCancelled, !isCreationCancellation(error) { self.error = error.localizedDescription } }
     }
@@ -289,6 +329,9 @@ struct CreationArticlesView: View {
     @State private var pendingDelete: AdminPostSummary?
     @State private var didPreview = false
     @State private var localError: String?
+    @State private var refreshAfterEditing = false
+    @State private var refreshAfterReading = false
+    private var query: CreationArticlesModel.Query { .init(filter: filter, search: search) }
     init(api: AdminAPIClient, initialFilter: AdminPostFilter = .all, openDrafts: @escaping () -> Void = {}) {
         self.api = api; self.openDrafts = openDrafts
         _model = StateObject(wrappedValue: CreationArticlesModel(api: api))
@@ -300,7 +343,7 @@ struct CreationArticlesView: View {
                 CreationPageHeader(title: "文章", subtitle: "整理思绪，写成自己的故事。") {
                     Button(action: openDrafts) { Image(systemName: "tray").font(.title3).frame(width: 48, height: 48).background(CreationDesign.surface, in: Circle()) }.accessibilityLabel("查看本机草稿")
                 }
-                CreationSearchField(placeholder: "搜索站点文章", text: $search) { Task { await reload() } }
+                CreationSearchField(placeholder: "搜索站点文章", text: $search)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(AdminPostFilter.allCases) { value in
@@ -324,15 +367,23 @@ struct CreationArticlesView: View {
             }.padding(20).padding(.bottom, 80)
         }.background(CreationDesign.canvas).foregroundStyle(CreationDesign.foreground).toolbar(.hidden, for: .navigationBar)
             .overlay(alignment: .bottomTrailing) { CreationFloatingButton(title: "写文章", symbol: "square.and.pencil") { Task { await newArticle() } } }
-            .onChange(of: filter) { _, _ in Task { await reload() } }
-            .task(id: search) { try? await Task.sleep(for: .milliseconds(350)); if !Task.isCancelled { await reload() } }
             .refreshable { await reload() }
-            .task {
+            .task(id: query) {
+                if !search.isEmpty {
+                    do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+                }
+                guard !Task.isCancelled else { return }
+                await model.loadIfNeeded(filter: filter, search: search)
+                guard !Task.isCancelled else { return }
                 if CreationPreview.isEnabled && ["article", "settings"].contains(CreationPreview.screen) && !didPreview { didPreview = true; await newArticle() }
-                if CreationPreview.isEnabled && CreationPreview.screen == "reader" && !didPreview { didPreview = true; await reload(); reading = model.posts.first }
+                if CreationPreview.isEnabled && CreationPreview.screen == "reader" && !didPreview { didPreview = true; reading = model.posts.first }
             }
-            .sheet(item: $reading, onDismiss: { Task { await reload() } }) { post in CreationArticleReader(post: post, api: api) }
-            .fullScreenCover(item: $route, onDismiss: { Task { await reload() } }) { route in CreationComposerView(api: api, draft: route.draft) { Task { await reload() } } }
+            .sheet(item: $reading, onDismiss: {
+                if refreshAfterReading { refreshAfterReading = false; Task { await reload() } }
+            }) { post in CreationArticleReader(post: post, api: api) { refreshAfterReading = true } }
+            .fullScreenCover(item: $route, onDismiss: {
+                if refreshAfterEditing { refreshAfterEditing = false; Task { await reload() } }
+            }) { route in CreationComposerView(api: api, draft: route.draft) { refreshAfterEditing = true } }
             .confirmationDialog("删除文章？", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }), presenting: pendingDelete) { post in
                 Button("删除「\(post.title)」", role: .destructive) { Task { await model.delete(post) } }
             } message: { _ in Text("删除后无法恢复。") }
@@ -377,10 +428,12 @@ private struct CreationArticleCard: View {
 struct CreationArticleReader: View {
     let post: AdminPostSummary
     let api: AdminAPIClient
+    var onChanged: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
     @State private var detail: AdminPostDetail?
     @State private var error: String?
     @State private var route: CreationEditorRoute?
+    @State private var refreshAfterEditing = false
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -405,7 +458,9 @@ struct CreationArticleReader: View {
                     }
                 }
                 .task { await load() }
-                .fullScreenCover(item: $route, onDismiss: { Task { await load() } }) { route in CreationComposerView(api: api, draft: route.draft) }
+                .fullScreenCover(item: $route, onDismiss: {
+                    if refreshAfterEditing { refreshAfterEditing = false; Task { await load() } }
+                }) { route in CreationComposerView(api: api, draft: route.draft) { refreshAfterEditing = true; onChanged() } }
         }.tint(CreationDesign.accent)
     }
     private func load() async {

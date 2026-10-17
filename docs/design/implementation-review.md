@@ -1,6 +1,39 @@
 # 想法优先改版 · 监督验收
 
-## 2026-10-15 主导航调整与二级页面统一（当前）
+## 2026-10-17 1.0（25）归档与上传
+
+- 本轮输入、点击区域和加载优化已纳入 **1.0（25）**。签名归档成功，`codesign --verify --deep --strict` 通过，bundle ID 为 `me.aluvien.yeziblog`；归档中未包含演示启动开关、演示 URLProtocol 或测试 bundle。
+- 归档 `/private/tmp/YeziApp-1.0-25.xcarchive`；归档日志 `/private/tmp/yezi-testflight-25-archive.log`。
+- 2026-10-17 19:16（Asia/Shanghai）尝试上传 App Store Connect，Apple 返回 `exportArchive Failed to Use Accounts`，要求团队 `DR2TNGTRAJ` 的 App Store Connect 访问权限，结果为 `EXPORT FAILED`。随后核对 Xcode 的 Apple Accounts 页面，当前没有已登录账户，页面显示 `Sign In…`。**本次上传未成功，不能记为 TestFlight 已接收。** 上传日志 `/private/tmp/yezi-testflight-25-upload.log`。
+- 已保留可重新上传的签名归档，待恢复 Xcode 的 Apple Account 登录及团队访问后，直接使用该归档继续上传，无需重做业务修复。最后一次成功上传仍为 2026-10-15 的 1.0（24）。
+
+## 2026-10-17 加载发热排查与优化（构建及模拟器回归通过，待真机能耗采样）
+
+- 用户反馈：加载数据时手机明显发热。**目前没有真机 CPU、能耗或温度采样，不能认定已找到实机发热的唯一原因，也不能据此声称温度已经下降。** 下面列的是代码中能够确认的额外工作及对应修订。
+- 絮语列表原为普通 `VStack`，会创建已加载列表中的所有卡片，屏幕外的图片和音乐信息也会启动加载。改为 `LazyVStack`，随滚动按需创建卡片；音乐卡片离开时只停止自身正在播放的音乐，避免其他卡片离开也触发全局播放器更新。
+- 内容图片原来分别使用 `AsyncImage` 与原图数据加载器，后者持有无数量/容量限制的原图字典，并在视图 body 中反复 `UIImage(data:)`。现在统一使用图片加载器：按卡片显示尺寸生成缩略图（尺寸分桶、最高 2048 像素），在非主 actor 上用 ImageIO 解码，缓存已解码图片；NSCache 配置 32 MiB 成本目标及 96 张数量目标，不再持有无限增长的原图字典。视图离开时释放自身持有的图片。
+- 远程内容图片最多同时加载 4 个；同 URL、同尺寸的并发消费者共用一次下载和解码。最后一个消费者取消时停止下载，排队中的取消项不会启动；清缓存会同时取消尚未完成的图片任务，防止旧任务重新填回缓存。
+- 原发布完成回调与编辑器关闭回调都会刷新列表，单纯打开再退出阅读/编辑也会刷新。现在在服务器内容变动后于关闭页面时刷新一次；无变动返回、切换已加载的列表页面均复用现有结果。显式下拉刷新继续获取新数据。
+- 文章筛选与搜索合并为一个可取消任务，非空搜索保留 350 ms 防抖；新刷新主动取消旧请求，原有 generation 检查继续阻止旧结果覆盖。加载成功的查询与正在加载的查询分开记录，避免取消后误把旧列表当成新搜索结果。
+- `CreationTests.swift` 新增 7 项 XCTest 回归用例，覆盖缩略图/缓存、请求合并、并发上限、离开后取消、返回页面复用、搜索取消和取消后的重试。2026-10-17 19:08（Asia/Shanghai），最终源码在 iPhone SE（第三代）、iOS 27.0 模拟器完成 **88 项单元测试，0 失败**，包含原有 81 项及新增 7 项。日志 `/private/tmp/yezi-loading-fix-unit-verified-20261017.log`；结果包 `/private/tmp/YeziLoadingFix-unit-verified-20261017.xcresult`。
+- 在完整构建恢复前，已用实际源码及异步 URLProtocol 完成 9 组独立组件检查，包括下载与排队取消、进行中清缓存及取消查询恢复，全部通过；独立组件记录不替代上面的原生测试，也不代表真机能耗结果。
+- 自动审批服务恢复后，最终源码的模拟器测试构建和 iOS Release 构建均成功。Release 日志 `/private/tmp/yezi-loading-fix-release-verified-20261017.log`，未发现编译警告或错误；Release 可执行文件未包含演示域名、演示 URLProtocol 或本轮 UI 测试启动开关。工程 plist、UI scheme XML 与 `git diff --check` 均通过。
+- 当前可用设备为模拟器，登记的物理 iPhone 均处于 unavailable 状态，尚未进行真机 Instruments 能耗/温度采样。
+- 本轮修改已纳入 1.0（25）签名归档，TestFlight 上传状态见本页发布记录。
+
+## 2026-10-17 音乐后输入与管理入口点击修复（原生界面回归通过）
+
+- 用户反馈：选择音乐后正文无法继续输入；管理选项只能点击文字，整行留白无效。
+- 输入区：最低书写高度由 `MarkdownWritingView` 的原生 UITextView 实际尺寸承担，避免仅在外层 frame 留白；絮语、文章及共用控件的关于页面均采用该尺寸方式。选择音乐后等待选择页关闭，再恢复正文焦点；取消选择不会强制弹出键盘，原文和光标不作重置。
+- 原生输入桥接：保留同步收起键盘，仅将界面更新期间触发的文本/撤销状态回写延后，避免 `updateUIView` 内同步发布状态；撤销状态只有实际变化时才发布。最初通过的 UI 回归暴露了状态更新警告，第一种异步收键盘处理导致取消后键盘回弹，现已改为协调器保护并复测通过。
+- 管理入口：在 NavigationLink 的 label 内为整行与卡片设置矩形点击区域，覆盖文字间、箭头前和四周内边距；文件入口、四个设置卡片、六个内容/站点列表入口及退出行均处理。
+- 新增独立 `YeziInteraction` scheme 与 `YeziAppUITests/InteractionTests.swift`，覆盖音乐选择后输入、再次点击空白书写区，以及管理列表与卡片的留白点击。UI 测试使用 DEBUG 下独立临时草稿目录及空白絮语样本，不访问生产 API，不使用真实草稿；这些启动开关不进入 Release。
+- 2026-10-17 18:58，**3 项原生 UI 测试全部通过**，包括 5 个管理卡片和 6 个列表入口的留白点击。日志 `/private/tmp/yezi-loading-fix-ui-20261017.log`；结果包 `/private/tmp/YeziLoadingFix-ui-20261017.xcresult`。
+- 最终键盘同步调整后，19:07 单独重跑完整音乐输入链路通过：选择稻香 → 输入文字 → 再开选择器并取消 → 键盘收起 → 点击正文留白 → 继续输入，原文保留；运行日志未再出现 `Modifying state during view update` 或 `Publishing changes from within view updates`。日志 `/private/tmp/yezi-loading-fix-input-verified-20261017.log`；结果包 `/private/tmp/YeziLoadingFix-input-verified-20261017.xcresult`。已人工查看并保留[原生输入截图](interaction-fixes-20261017/music-input.png)。
+- 最终 88 项单元测试、Release 构建及工程格式校验均通过，详见上一节。本轮不涉及真实 QQ 音频播放或生产账户写入的端到端验证。
+- 本节修订已纳入 1.0（25）签名归档，最后一次成功上传仍为下面记录的 1.0（24）。
+
+## 2026-10-15 主导航调整与二级页面统一（上一轮）
 
 主导航调整为 **絮语、文章、评论、管理**。文件从底部移入管理首页的独立入口；[完整原生截图](interaction-20261015/index.html) 已按此次调整更新。下方第一轮改版与 10 月 3 日记录保留为历史基线。
 

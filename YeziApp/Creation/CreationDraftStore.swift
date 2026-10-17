@@ -115,7 +115,14 @@ struct CreationDraftScan: Sendable {
 }
 
 actor CreationDraftStore {
-    static let shared = CreationDraftStore()
+    static let shared: CreationDraftStore = {
+#if DEBUG
+        if CreationPreview.isEnabled && ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+            return CreationDraftStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("CreationUITests-\(UUID())", isDirectory: true))
+        }
+#endif
+        return CreationDraftStore()
+    }()
     let directory: URL
     private var removed: Set<String> = []
 

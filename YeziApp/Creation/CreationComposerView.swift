@@ -17,6 +17,7 @@ struct CreationComposerView: View {
     @State private var previewing = false
     @StateObject private var writing = MarkdownWritingController()
     @State private var sheet: CreationSheet?
+    @State private var resumeWritingAfterSheet = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var showsPhotos = false
     @State private var showsDiscard = false
@@ -50,7 +51,7 @@ struct CreationComposerView: View {
                     }
                 }
             }
-            .sheet(item: $sheet) { value in sheetContent(value) }
+            .sheet(item: $sheet, onDismiss: resumeWriting) { value in sheetContent(value) }
             .sheet(item: $previewMedia) { media in CreationImagePreview(media: media, api: model.api, site: model.draft.site) }
             .confirmationDialog("舍弃本机草稿？", isPresented: $showsDiscard, titleVisibility: .visible) {
                 Button("舍弃草稿", role: .destructive) { Task { if await model.discard() { dismiss() } } }
@@ -93,7 +94,15 @@ struct CreationComposerView: View {
     private func finishMusic(_ music: CreationMusic) {
         let replacing = replacingMusic
         replacingMusic = nil
+        resumeWritingAfterSheet = true
         Task { await model.addMusic(music, replacing: replacing) }
+    }
+
+    private func resumeWriting() {
+        guard resumeWritingAfterSheet else { return }
+        resumeWritingAfterSheet = false
+        guard model.canEdit, !model.isSaving, !previewing else { return }
+        focused = true
     }
 
     private func finishCamera(_ data: Data?) {
@@ -175,8 +184,8 @@ struct CreationComposerView: View {
         ZStack(alignment: .topLeading) {
             if model.draft.text.isEmpty { Text(article ? "从这里开始写作…" : "这一刻，想说点什么…").foregroundStyle(CreationDesign.secondary).padding(.top, 12).padding(.leading, 5).allowsHitTesting(false) }
             MarkdownWritingView(text: model.binding(\.text), focused: $focused, controller: writing,
-                                editable: !model.isSaving && model.canEdit, label: article ? "文章正文" : "絮语正文")
-                .frame(minHeight: article ? 330 : (model.draft.media.isEmpty && model.draft.music.isEmpty ? 280 : 180), alignment: .topLeading)
+                                editable: !model.isSaving && model.canEdit, label: article ? "文章正文" : "絮语正文",
+                                minimumHeight: article ? 330 : (model.draft.media.isEmpty && model.draft.music.isEmpty ? 280 : 180))
         }
     }
 

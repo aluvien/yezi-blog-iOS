@@ -14,8 +14,7 @@ final class AppContainer: ObservableObject {
     init() {
         let responseCache = ResponseCache()
         let apiURLCache = URLCache(memoryCapacity: 10 * 1024 * 1024, diskCapacity: 30 * 1024 * 1024, diskPath: "YeziAPICache")
-        let imageURLCache = URLCache(memoryCapacity: 20 * 1024 * 1024, diskCapacity: 100 * 1024 * 1024, diskPath: "YeziImageCache")
-        let imageLoader = ImageLoader(urlCache: imageURLCache)
+        let imageLoader = ImageLoader.shared
         let apiClient = APIClient(urlCache: apiURLCache, responseCache: responseCache)
 
         self.apiClient = apiClient
