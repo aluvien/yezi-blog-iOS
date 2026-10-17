@@ -4,8 +4,9 @@
 
 - 本轮输入、点击区域和加载优化已纳入 **1.0（25）**。签名归档成功，`codesign --verify --deep --strict` 通过，bundle ID 为 `me.aluvien.yeziblog`；归档中未包含演示启动开关、演示 URLProtocol 或测试 bundle。
 - 归档 `/private/tmp/YeziApp-1.0-25.xcarchive`；归档日志 `/private/tmp/yezi-testflight-25-archive.log`。
-- 2026-10-17 19:16（Asia/Shanghai）尝试上传 App Store Connect，Apple 返回 `exportArchive Failed to Use Accounts`，要求团队 `DR2TNGTRAJ` 的 App Store Connect 访问权限，结果为 `EXPORT FAILED`。随后核对 Xcode 的 Apple Accounts 页面，当前没有已登录账户，页面显示 `Sign In…`。**本次上传未成功，不能记为 TestFlight 已接收。** 上传日志 `/private/tmp/yezi-testflight-25-upload.log`。
-- 已保留可重新上传的签名归档，待恢复 Xcode 的 Apple Account 登录及团队访问后，直接使用该归档继续上传，无需重做业务修复。最后一次成功上传仍为 2026-10-15 的 1.0（24）。
+- 2026-10-17 19:16（Asia/Shanghai）首次尝试上传时，Apple 返回 `exportArchive Failed to Use Accounts`，当时 Xcode 的 Apple Accounts 页面没有已登录账户；此次尝试结果为 `EXPORT FAILED`。首次尝试日志 `/private/tmp/yezi-testflight-25-upload.log`。
+- 用户恢复 Apple Account 登录后，使用同一份已验证的签名归档继续上传。**2026-10-17 19:49（Asia/Shanghai）上传成功**，Apple 返回 `Upload succeeded`、`EXPORT SUCCEEDED`，当时状态为 `Uploaded package is processing`。成功上传日志 `/private/tmp/yezi-testflight-25-upload-after-login.log`。尚未将 Apple 后续处理完成或测试员可安装状态记为已验证。
+- 本轮修复源码已同步 GitHub `main`，提交 `65e963e700df90fc7fd3cf07a9f6ada1d945e491`（`Fix music input and reduce loading work for build 25`）；本条上传记录随之后续文档提交同步。
 
 ## 2026-10-17 加载发热排查与优化（构建及模拟器回归通过，待真机能耗采样）
 
@@ -31,7 +32,7 @@
 - 2026-10-17 18:58，**3 项原生 UI 测试全部通过**，包括 5 个管理卡片和 6 个列表入口的留白点击。日志 `/private/tmp/yezi-loading-fix-ui-20261017.log`；结果包 `/private/tmp/YeziLoadingFix-ui-20261017.xcresult`。
 - 最终键盘同步调整后，19:07 单独重跑完整音乐输入链路通过：选择稻香 → 输入文字 → 再开选择器并取消 → 键盘收起 → 点击正文留白 → 继续输入，原文保留；运行日志未再出现 `Modifying state during view update` 或 `Publishing changes from within view updates`。日志 `/private/tmp/yezi-loading-fix-input-verified-20261017.log`；结果包 `/private/tmp/YeziLoadingFix-input-verified-20261017.xcresult`。已人工查看并保留[原生输入截图](interaction-fixes-20261017/music-input.png)。
 - 最终 88 项单元测试、Release 构建及工程格式校验均通过，详见上一节。本轮不涉及真实 QQ 音频播放或生产账户写入的端到端验证。
-- 本节修订已纳入 1.0（25）签名归档，最后一次成功上传仍为下面记录的 1.0（24）。
+- 本节修订已纳入 1.0（25）签名归档并成功上传，详见本页发布记录；下面的 1.0（24）记录保留为历史。
 
 ## 2026-10-15 主导航调整与二级页面统一（上一轮）
 
