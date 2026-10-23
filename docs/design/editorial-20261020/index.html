@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>叶子 · 原生界面验收</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f2eb;color:#252520;font:15px/1.65 system-ui,-apple-system,sans-serif}main{max-width:1440px;margin:auto;padding:48px 32px}header{border-bottom:1px solid #d9d4ca;padding-bottom:24px;margin-bottom:36px}h1{font:500 38px/1.4 "Songti SC",serif;margin:8px 0}p{color:#76716a;margin:8px 0}.eyebrow{color:#b64432;letter-spacing:.12em;font-size:12px}nav{display:flex;gap:24px;flex-wrap:wrap;margin-top:20px}a{color:inherit;text-decoration-color:#b64432;text-underline-offset:5px}h2{font:500 28px "Songti SC",serif;margin-top:48px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:36px 24px}figure{margin:0;min-width:0}figure img{display:block;width:100%;height:auto;border:1px solid #d9d4ca;border-radius:8px;background:#eee9df}figcaption{padding:12px 0}figcaption span{color:#76716a;font-size:12px;display:block}.small{max-width:960px}footer{margin-top:48px;padding-top:20px;border-top:1px solid #d9d4ca;color:#76716a;font-size:13px}@media(max-width:600px){main{padding:28px 20px}.grid{grid-template-columns:1fr 1fr;gap:24px 12px}h1{font-size:28px}}@media(max-width:420px){.grid{grid-template-columns:1fr}}
+</style>
+<main>
+<header><div class="eyebrow">叶子 / EDITORIAL STUDY 01</div><h1>从效果图，到真实界面。</h1><p>以下均为 SwiftUI App 在 iPhone 模拟器中的原始截图，使用离线样本数据。点击图片可查看原尺寸。</p><nav><a href="#core">核心页面</a><a href="#settings">管理子页面</a><a href="#accessibility">小屏与大字体</a></nav></header>
+<h2 id="core">内容、交流与管理</h2><div class="grid">
+<figure><a href="modern-feed.png"><img src="modern-feed.png" alt="絮语原生页面"></a><figcaption>絮语<span>宋体正文 · 开放排版 · 图片与音乐</span></figcaption></figure>
+<figure><a href="modern-articles.png"><img src="modern-articles.png" alt="文章原生页面"></a><figcaption>文章<span>状态筛选 · 阅读与编辑 · 右下角写作入口</span></figcaption></figure>
+<figure><a href="modern-comments.png"><img src="modern-comments.png" alt="评论原生页面"></a><figcaption>评论<span>真实审核状态 · 通过与回复</span></figcaption></figure>
+<figure><a href="modern-management.png"><img src="modern-management.png" alt="管理原生页面"></a><figcaption>管理<span>站点信息 · 内容统计 · 整行入口</span></figcaption></figure>
+<figure><a href="modern-files.png"><img src="modern-files.png" alt="文件图片筛选页面"></a><figcaption>文件管理<span>自适应图片网格 · 打开、分享与整理</span></figcaption></figure>
+<figure><a href="modern-settings.png"><img src="modern-settings.png" alt="基础信息页面"></a><figcaption>基础信息<span>线性表单 · 右上角保存</span></figcaption></figure>
+<figure><a href="modern-editor.png"><img src="modern-editor.png" alt="Markdown 编辑器"></a><figcaption>文章编辑<span>七个单排工具 · 轻量顶栏 · 标题菜单</span></figcaption></figure>
+</div>
+<h2>AI 配图 · 实际运行</h2><div class="grid">
+<figure><a href="add-image.png"><img loading="lazy" src="add-image.png" alt="添加图片菜单的实际运行截图"></a><figcaption>添加图片<span>AI 生图在上 · 相册选择在下</span></figcaption></figure>
+<figure><a href="ai-image-preview-offline.png"><img loading="lazy" src="ai-image-preview-offline.png" alt="AI 生图页面的离线接口测试截图"></a><figcaption>AI 配图预览<span>离线接口返回样本 · 非真实 CPA 生成结果</span></figcaption></figure>
+<figure><a href="ai-image-settings-offline.png"><img loading="lazy" src="ai-image-settings-offline.png" alt="CPA 生图服务配置的实际运行截图"></a><figcaption>CPA 服务配置<span>示例地址与模型 · 密钥不展示</span></figcaption></figure>
+</div>
+<h2 id="settings">同一套风格，延伸到子页面</h2><div class="grid">
+<figure><a href="modern-music-settings.png"><img loading="lazy" src="modern-music-settings.png" alt="音乐设置"></a><figcaption>音乐设置</figcaption></figure>
+<figure><a href="modern-appearance.png"><img loading="lazy" src="modern-appearance.png" alt="外观设置"></a><figcaption>外观主题</figcaption></figure>
+<figure><a href="modern-updates.png"><img loading="lazy" src="modern-updates.png" alt="GitHub 更新"></a><figcaption>GitHub 更新</figcaption></figure>
+<figure><a href="modern-works.png"><img loading="lazy" src="modern-works.png" alt="作品管理"></a><figcaption>作品</figcaption></figure>
+<figure><a href="modern-taxonomy.png"><img loading="lazy" src="modern-taxonomy.png" alt="分类和标签"></a><figcaption>分类与标签</figcaption></figure>
+<figure><a href="modern-references.png"><img loading="lazy" src="modern-references.png" alt="引用管理"></a><figcaption>引用资料</figcaption></figure>
+<figure><a href="modern-about.png"><img loading="lazy" src="modern-about.png" alt="关于页面编辑"></a><figcaption>关于页面</figcaption></figure>
+</div>
+<h2 id="accessibility">小屏与深色大字体</h2><div class="grid small">
+<figure><a href="small-editor.png"><img loading="lazy" src="small-editor.png" alt="375pt 单排 Markdown 工具栏"></a><figcaption>375pt 编辑器<span>七个入口完整显示</span></figcaption></figure>
+<figure><a href="small-editor-keyboard.png"><img loading="lazy" src="small-editor-keyboard.png" alt="键盘上方的单排 Markdown 工具栏"></a><figcaption>键盘弹出后<span>格式、媒体与预览保持可用</span></figcaption></figure>
+<figure><a href="small-articles.png"><img loading="lazy" src="small-articles.png" alt="375pt 文章页面"></a><figcaption>375pt 小屏<span>写作按钮避开底栏</span></figcaption></figure>
+<figure><a href="small-dark-large-type.png"><img loading="lazy" src="small-dark-large-type.png" alt="深色大字体管理页面"></a><figcaption>深色 · 辅助功能大字体</figcaption></figure>
+<figure><a href="small-files-large-type.png"><img loading="lazy" src="small-files-large-type.png" alt="大字体文件页面"></a><figcaption>文件 · 大字体</figcaption></figure>
+</div>
+<footer>设计与实现：2026-10-20。图片和统计均为演示样本。AI 生图已实现 CPA/OpenAI 兼容接入，真实服务联调、真机能耗采样和新 TestFlight 上传尚未完成。<a href="README.md">实现说明</a></footer>
+</main>
+</html>

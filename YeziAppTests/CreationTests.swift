@@ -4,6 +4,154 @@ import UIKit
 import SwiftUI
 @testable import YeziApp
 
+final class CreationPlaybackTests: XCTestCase {
+    private var songs: [CreationMusic] { (1...4).map { CreationMusic(spec: "qqvip:SONG\($0):song") } }
+    func testOrderedEndAndSingleRepeat() {
+        var queue = CreationPlaybackQueue()
+        queue.set(songs, selected: songs[3])
+        XCTAssertFalse(queue.advance(automatic: true))
+        XCTAssertEqual(queue.current?.playbackKey, songs[3].playbackKey)
+        queue.mode = .repeatOne
+        XCTAssertTrue(queue.advance(automatic: true))
+        XCTAssertEqual(queue.current?.playbackKey, songs[3].playbackKey)
+        XCTAssertTrue(queue.advance(automatic: false))
+        XCTAssertEqual(queue.current?.playbackKey, songs[0].playbackKey)
+    }
+    func testShuffleVisitsEachSongAndCanGoBack() {
+        var queue = CreationPlaybackQueue(); queue.set(songs, selected: songs[0]); queue.mode = .shuffle
+        var seen = Set([queue.index])
+        for _ in 0..<3 { XCTAssertTrue(queue.advance(automatic: true)); XCTAssertTrue(seen.insert(queue.index).inserted) }
+        let last = queue.index
+        queue.previous(); XCTAssertNotEqual(queue.index, last)
+    }
+    func testQueueDeduplicatesMarkerPresentationOptions() {
+        var queue = CreationPlaybackQueue()
+        queue.set([songs[0], CreationMusic(spec: "qqvip:SONG1:song:fold"), songs[1]], selected: songs[0])
+        XCTAssertEqual(queue.items.count, 2)
+    }
+    @MainActor func testPlaylistUsesMetadataPagesAndPreservesTotal() async throws {
+        let server = CreationFixtureServer { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertTrue(query.contains { $0.name == "type" && $0.value == "playlist-metadata" })
+            if query.contains(where: { $0.name == "offset" && $0.value == "50" }) {
+                return FixtureReply(#"{"tracks":[{"key":"qqvip:FIRST1","name":"第一首"},{"key":"qqvip:SECOND","name":"第二首"},{"key":"qqvip:SECOND","name":"第二首"}],"total":217,"availableTotal":2,"nextOffset":null}"#)
+            }
+            return FixtureReply(#"{"tracks":[{"key":"qqvip:FIRST1","name":"第一首"}],"total":217,"availableTotal":2,"nextOffset":50}"#)
+        }
+        let model = CreationPlaylistModel()
+        await model.load(api: server.api, id: "LIST1")
+        XCTAssertEqual(model.total, 217); XCTAssertEqual(model.songs.count, 1)
+        XCTAssertEqual(model.nextOffset, 50)
+        await model.load(api: server.api, id: "LIST1")
+        XCTAssertEqual(model.songs.count, 2); XCTAssertNil(model.nextOffset)
+        XCTAssertNotNil(model.incompleteMessage)
+        await model.load(api: server.api, id: "LIST1")
+        XCTAssertEqual(server.recorded.count, 2)
+    }
+    @MainActor func testOlderPlaylistResponseDoesNotPretendToBeComplete() async {
+        let server = CreationFixtureServer { _ in FixtureReply(#"{"tracks":[{"key":"qqvip:SONG1"}],"total":217}"#) }
+        let model = CreationPlaylistModel(); await model.load(api: server.api, id: "LIST1")
+        XCTAssertEqual(model.total, 217); XCTAssertNil(model.nextOffset)
+        XCTAssertTrue(model.incompleteMessage?.contains("更新网站接口") == true)
+    }
+    @MainActor func testQueueContinuesAtPageBoundaryWithoutResolvingEverySong() async throws {
+        let server = CreationFixtureServer { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if query.contains(where: { $0.name == "type" && $0.value == "playlist-metadata" }) {
+                XCTAssertTrue(query.contains { $0.name == "offset" && $0.value == "50" })
+                return FixtureReply(#"{"tracks":[{"key":"qqvip:SONG2"},{"key":"qqvip:SONG3"},{"key":"qqvip:SONG3"},{"key":"qqvip:SONG4"}],"total":4,"nextOffset":null}"#)
+            }
+            return FixtureReply("{}", failure: .cancelled)
+        }
+        let audio = CreationAudioPlayer()
+        defer { audio.stop() }
+        audio.play(songs[1], in: Array(songs.prefix(2)), api: server.api, playlistID: "LIST1", nextOffset: 50)
+        for _ in 0..<100 where audio.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(audio.isLoading)
+        audio.next(automatic: true)
+        for _ in 0..<100 where audio.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(audio.queue.items.count, 4)
+        XCTAssertEqual(audio.current?.playbackKey, songs[2].playbackKey)
+        XCTAssertEqual(server.recorded.count, 3, "只解析所选的两首歌曲和一页资料，不批量解析播放地址")
+        XCTAssertFalse(audio.isLoading)
+    }
+}
+
+final class CreationFeedPresentationTests: XCTestCase {
+    func testMomentLocationAndCommentCountRemainBackwardCompatible() throws {
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let old = try decoder.decode(AdminMoment.self, from: Data(#"{"id":1,"content":"文字","images":[]}"#.utf8))
+        XCTAssertNil(old.location); XCTAssertNil(old.commentCount)
+        let new = try decoder.decode(AdminMoment.self, from: Data(#"{"id":1,"content":"文字","images":[],"location":"郑州市","comment_count":2}"#.utf8))
+        XCTAssertEqual(new.location, "郑州市"); XCTAssertEqual(new.commentCount, 2)
+    }
+    @MainActor
+    func testCommentStoreSharesUpdatesAndDeletesWithoutCrossingSites() throws {
+        let api = AdminAPIClient(siteRoot: URL(string: "https://one.invalid")!)
+        let other = AdminAPIClient(siteRoot: URL(string: "https://two.invalid")!)
+        let decoder = JSONDecoder()
+        let original = try decoder.decode(AdminComment.self, from: Data(#"{"id":1,"targetType":"moment","targetId":8,"nickname":"访客","content":"评论","status":"pending"}"#.utf8))
+        let updated = try decoder.decode(AdminComment.self, from: Data(#"{"id":1,"targetType":"moment","targetId":8,"nickname":"访客","content":"评论","status":"approved","adminReply":"谢谢"}"#.utf8))
+        api.commentStore.ingest([original]); api.commentStore.seedCount(1, momentID: 8)
+        let commentsPage = AdminCommentsModel(api: api)
+        commentsPage.items = [original]; commentsPage.counts = [.all: 1, .pending: 1, .approved: 0]; commentsPage.total = 1
+        api.commentStore.didUpdate(updated)
+        api.commentStore.ingest([original], since: 0)
+        XCTAssertEqual(api.commentStore.records[1]?.adminReply, "谢谢")
+        XCTAssertEqual(api.commentStore.change?.old?.status, "pending")
+        XCTAssertEqual(commentsPage.items.first?.adminReply, "谢谢")
+        XCTAssertEqual(commentsPage.counts[.pending], 0); XCTAssertEqual(commentsPage.counts[.approved], 1)
+        XCTAssertTrue(other.commentStore.records.isEmpty)
+        api.commentStore.didDelete(1)
+        api.commentStore.seedCount(1, momentID: 8)
+        api.commentStore.ingest([original])
+        XCTAssertNil(api.commentStore.records[1]); XCTAssertEqual(api.commentStore.momentCounts[8], 0)
+        XCTAssertTrue(commentsPage.items.isEmpty); XCTAssertEqual(commentsPage.total, 0)
+        api.commentStore.clear(); XCTAssertTrue(api.commentStore.deleted.isEmpty)
+    }
+    func testSummaryDecodesBothOldAndNewServers() throws {
+        let old = Data(#"{"id":1,"title":"标题","slug":"post","category":"随笔","tags":[],"status":"draft"}"#.utf8)
+        XCTAssertNil(try JSONDecoder().decode(AdminPostSummary.self, from: old).excerpt)
+        let new = Data(#"{"id":1,"title":"标题","slug":"post","category":"随笔","tags":["阅读"],"status":"published","excerpt":"文章摘要"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(AdminPostSummary.self, from: new).excerpt, "文章摘要")
+    }
+    func testMomentTagsMatchSiteRulesAndIgnoreMusicMetadata() {
+        XCTAssertEqual(CreationMomentTags.parse("## 标题\n生活 #电影 #电影 #iOS #IOS，#摄影"), ["电影", "iOS", "摄影"])
+        XCTAssertEqual(CreationMomentTags.parse((1...12).map { "#tag\($0)" }.joined(separator: " ")).count, 8)
+        let music = MarkdownParser.makeMusicSpec(id: "123", type: "song", title: "#歌曲", artist: "#歌手")
+        XCTAssertEqual(CreationMomentTags.parse("!music \(music)\n#生活"), ["生活"])
+    }
+}
+
+final class CommentSourceSummaryTests: XCTestCase {
+    func testCommentAvatarUsesWebsiteURLAndSupportsSnakeCase() throws {
+        let data = Data(#"{"id":1,"targetType":"post","targetId":1,"nickname":"访客","content":"评论","status":"approved","avatar_url":"/uploads/avatar.jpg"}"#.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        XCTAssertEqual(try decoder.decode(AdminComment.self, from: data).displayAvatar, "/uploads/avatar.jpg")
+    }
+
+    private func summary(_ label: String, type: String = "moment") throws -> String? {
+        let data = try JSONSerialization.data(withJSONObject: ["id": 1, "targetType": type, "targetId": 1, "targetLabel": label, "nickname": "访客", "content": "评论", "status": "approved"])
+        return try JSONDecoder().decode(AdminComment.self, from: data).displayTargetLabel
+    }
+
+    func testMusicMarkerDoesNotLeakIntoCommentSource() throws {
+        XCTAssertEqual(try summary("!music qqvip:000qXLml47rb6L:song\n时间过得真快，好想停滞到那一刻。"), "时间过得真快，好想停滞到那一刻。")
+        XCTAssertEqual(try summary("!music qqvip:000qXLml47rb6L:song"), "音乐絮语")
+        XCTAssertEqual(try summary("```music\nqqvip:000qXLml47rb6L:song\n```"), "音乐絮语")
+        let spec = MarkdownParser.makeMusicSpec(id: "song", type: "song", title: "鲜花", artist: "回春丹乐队")
+        XCTAssertEqual(try summary("!music \(spec)"), "鲜花 · 回春丹乐队")
+    }
+
+    func testSourceKeepsReadableTextAndLiteralArticleTitles() throws {
+        XCTAssertEqual(try summary("## **慢下来**\n\n看看日常"), "慢下来")
+        XCTAssertEqual(try summary("![窗边的花](/flowers.jpg)"), "窗边的花")
+        XCTAssertEqual(try summary("!music 接口说明", type: "post"), "!music 接口说明")
+        XCTAssertNil(try summary("  "))
+    }
+}
+
 private struct FixtureReply: Sendable {
     var status = 200
     var body: Data
@@ -24,6 +172,12 @@ private final class CreationFixtureServer: @unchecked Sendable {
     init(handler: @escaping @Sendable (URLRequest) -> FixtureReply) { self.handler = handler; CreationFixtureProtocol.register(self) }
     func response(_ request: URLRequest) -> FixtureReply { lock.withLock { requests.append(request) }; return handler(request) }
     var recorded: [URLRequest] { lock.withLock { requests } }
+    var session: URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CreationFixtureProtocol.self]
+        configuration.httpCookieStorage = nil
+        return URLSession(configuration: configuration)
+    }
     var api: AdminAPIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CreationFixtureProtocol.self]
@@ -277,7 +431,158 @@ private final class FixtureCounter: @unchecked Sendable {
     func increment() -> Int { lock.withLock { count += 1; return count } }
 }
 
+final class AIImageServiceTests: XCTestCase {
+    @MainActor private func imageData() -> Data {
+        UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).pngData { context in
+            UIColor.orange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        }
+    }
+
+    func testEndpointNormalizationAndRejectingEmbeddedSecrets() throws {
+        for address in ["https://cpa.invalid", "https://cpa.invalid/v1/", "https://cpa.invalid/v1/images/generations"] {
+            XCTAssertEqual(try AIImageSettings(address: address).endpoint().absoluteString, "https://cpa.invalid/v1/images/generations")
+        }
+        for address in ["http://cpa.invalid", "https://secret@cpa.invalid", "https://cpa.invalid/v1?key=secret", "https://cpa.invalid/#secret"] {
+            XCTAssertThrowsError(try AIImageSettings(address: address).endpoint())
+        }
+        XCTAssertEqual(try AIImageSettings(address: "https://cpa.invalid/proxy/v1").endpoint().path, "/proxy/v1/images/generations")
+    }
+
+    func testSettingsAreStoredInSecureStoreAndInvalidChangesAreNotSaved() throws {
+        let secure = InMemorySecureValueStore()
+        let store = AIImageSettingsStore(secure: secure)
+        let settings = AIImageSettings(address: "https://cpa.invalid/v1", model: "my-image-model", apiKey: "test-key")
+        try store.save(settings)
+        XCTAssertEqual(store.load().apiKey, "test-key")
+        XCTAssertEqual(store.load().model, "my-image-model")
+        XCTAssertThrowsError(try store.save(AIImageSettings(address: "invalid")))
+        XCTAssertEqual(store.load().address, settings.address)
+    }
+
+    @MainActor func testGenerationUsesOpenAIRequestAndDecodesBase64() async throws {
+        let png = imageData()
+        let json = "{\"data\":[{\"b64_json\":\"\(png.base64EncodedString())\"}]}"
+        let server = CreationFixtureServer { _ in FixtureReply(json) }
+        let settings = AIImageSettings(address: "https://\(server.host)/v1", model: "custom-model", apiKey: "test-key")
+        let result = try await AIImageService(session: server.session).generate(settings: settings, prompt: "山间晨雾", size: "1024x1536")
+        XCTAssertEqual(result.data, png)
+        let request = try XCTUnwrap(server.recorded.first)
+        XCTAssertEqual(request.url?.path, "/v1/images/generations")
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-key")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(body["model"] as? String, "custom-model")
+        XCTAssertEqual(body["prompt"] as? String, "山间晨雾")
+        XCTAssertEqual(body["size"] as? String, "1024x1536")
+        XCTAssertEqual(body["n"] as? Int, 1)
+        XCTAssertNil(body["response_format"])
+        XCTAssertEqual(server.recorded.count, 1)
+    }
+
+    @MainActor func testImageURLDownloadDoesNotReceiveCPACredentials() async throws {
+        let png = imageData()
+        let images = CreationFixtureServer { _ in FixtureReply(data: png) }
+        let server = CreationFixtureServer { _ in FixtureReply("{\"data\":[{\"url\":\"https://\(images.host)/generated.png\"}]}") }
+        let settings = AIImageSettings(address: "https://\(server.host)/v1", model: "model", apiKey: "private-key")
+        let result = try await AIImageService(session: server.session).generate(settings: settings, prompt: "sky", size: "1024x1024")
+        XCTAssertEqual(result.data, png)
+        XCTAssertEqual(images.recorded.count, 1)
+        XCTAssertNil(images.recorded.first?.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertNil(images.recorded.first?.value(forHTTPHeaderField: "Cookie"))
+    }
+
+    func testServiceFailureDoesNotLeakRawErrorOrRetryGeneration() async throws {
+        let server = CreationFixtureServer { _ in FixtureReply(#"{"error":{"message":"private-key secret debug"}}"#, status: 401) }
+        let settings = AIImageSettings(address: "https://\(server.host)", model: "model", apiKey: "private-key")
+        do {
+            _ = try await AIImageService(session: server.session).generate(settings: settings, prompt: "sky", size: "1024x1024")
+            XCTFail("应拒绝鉴权失败")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("密钥"))
+            XCTAssertFalse(error.localizedDescription.contains("private-key"))
+        }
+        XCTAssertEqual(server.recorded.count, 1)
+    }
+
+    func testInvalidResultsAreRejected() async throws {
+        for json in [#"{"data":[]}"#, #"{"data":[{"b64_json":"bm90LWFuLWltYWdl"}]}"#, #"{"data":[{"url":"http://unsafe.invalid/image.png"}]}"#] {
+            let server = CreationFixtureServer { _ in FixtureReply(json) }
+            let settings = AIImageSettings(address: "https://\(server.host)", model: "model", apiKey: "test")
+            do {
+                _ = try await AIImageService(session: server.session).generate(settings: settings, prompt: "sky", size: "1024x1024")
+                XCTFail("应拒绝空结果或不可读取的图片")
+            } catch { XCTAssertTrue(error is AIImageError) }
+            XCTAssertEqual(server.recorded.count, 1)
+        }
+    }
+
+    func testCancellingGenerationStopsRequestWithoutRetry() async throws {
+        let server = LoadingFixtureServer { _ in FixtureReply(#"{"data":[]}"#, delay: 3) }
+        let service = AIImageService(session: server.session)
+        let settings = AIImageSettings(address: server.site.absoluteString, model: "model", apiKey: "test")
+        let task = Task { try await service.generate(settings: settings, prompt: "sky", size: "1024x1024") }
+        for _ in 0..<100 {
+            if server.count > 0 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(server.count, 1)
+        task.cancel()
+        do { _ = try await task.value; XCTFail("应取消生成") }
+        catch { XCTAssertTrue(error is CancellationError || (error as? URLError)?.code == .cancelled) }
+        XCTAssertEqual(server.count, 1)
+        XCTAssertEqual(server.cancelled, 1)
+    }
+
+    @MainActor func testGeneratedAttachmentTracksCoverWithoutDuplicatingBody() throws {
+        let server = CreationFixtureServer { _ in FixtureReply("{}") }
+        var draft = CreationDraft(site: "https://\(server.host)", kind: .post)
+        draft.text = "正文\n\n![AI 配图](/uploads/generated.jpg)"
+        let store = CreationDraftStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let model = CreationComposerModel(api: server.api, draft: draft, store: store)
+        let attachment = try JSONDecoder().decode(AdminAttachment.self, from: Data(#"{"id":901,"path":"/uploads/generated.jpg"}"#.utf8))
+        model.registerGeneratedImage(attachment, asCover: true)
+        model.registerGeneratedImage(attachment, asCover: true)
+        XCTAssertEqual(model.draft.attachmentIDs, [901])
+        XCTAssertEqual(model.draft.cover, attachment.path)
+        XCTAssertEqual(model.draft.articleSubmissionContent, draft.text)
+    }
+
+    func testOfflinePreviewMatchesSiteUploadEnvelope() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CreationPreviewURLProtocol.self]
+        configuration.timeoutIntervalForRequest = 5
+        let api = AdminAPIClient(siteRoot: URL(string: "https://creation-preview.invalid")!, session: URLSession(configuration: configuration))
+        let attachment = try await api.uploadFile(data: Data(repeating: 42, count: 128_000), filename: "fixture.jpg", mimeType: "image/jpeg")
+        XCTAssertEqual(attachment.id, 801)
+        XCTAssertEqual(attachment.path, "/uploads/local-preview.jpg")
+    }
+
+    @MainActor func testImageMarkdownInsertsAtSavedSelectionWithoutKeyboard() {
+        let view = UITextView()
+        view.text = "before after"
+        view.selectedRange = NSRange(location: 7, length: 0)
+        let controller = MarkdownWritingController()
+        controller.textView = view
+        XCTAssertFalse(view.isFirstResponder)
+        XCTAssertTrue(controller.insert("![AI 配图](/generated.jpg)"))
+        XCTAssertEqual(view.text, "before ![AI 配图](/generated.jpg)after")
+    }
+}
+
 final class CreationTests: XCTestCase {
+    @MainActor
+    func testEditorialFontIsBundledAndSupportsChineseOffline() throws {
+        let font = try XCTUnwrap(UIFont(name: "NotoSerifSC-ExtraLight", size: 32))
+        XCTAssertEqual(font.familyName, "Noto Serif SC")
+        let coreFont = font as CTFont
+        let characters = Array("絮语文章评论管理".utf16)
+        var glyphs = Array(repeating: CGGlyph(0), count: characters.count)
+        XCTAssertTrue(CTFontGetGlyphsForCharacters(coreFont, characters, &glyphs, characters.count))
+        XCTAssertFalse(glyphs.contains(0), "页面标题不可回退成缺字方框")
+    }
+
     private func store() -> CreationDraftStore {
         CreationDraftStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("CreationTests-\(UUID())"))
     }
@@ -1009,6 +1314,72 @@ final class CreationTests: XCTestCase {
         await model.load(); XCTAssertNotNil(model.errorMessage); XCTAssertFalse(model.canEdit)
         await model.load(); XCTAssertNil(model.errorMessage); XCTAssertTrue(model.canEdit)
         XCTAssertEqual(model.draft.text, "正文")
+    }
+
+    func testMusicStatusDistinguishesLoginFromPlaybackAndAcceptsOlderServer() throws {
+        let decoder = JSONDecoder()
+        let failed = try decoder.decode(AdminQQMusicStatus.self, from: Data(#"{"available":true,"loggedIn":true,"uin":"123","playable":false,"healthStatus":"playback_unavailable","detail":"探测歌曲未返回播放地址"}"#.utf8))
+        XCTAssertEqual(failed.displayLabel, "已登录 · 播放异常")
+        XCTAssertTrue(failed.playbackWarning?.contains("探测歌曲未返回播放地址") == true)
+        let older = try decoder.decode(AdminQQMusicStatus.self, from: Data(#"{"available":true,"loggedIn":true}"#.utf8))
+        XCTAssertEqual(older.displayLabel, "已登录")
+        XCTAssertNil(older.playbackWarning)
+    }
+
+    @MainActor func testCancelledMusicPreviewClearsLoadingWithoutHealthProbe() async throws {
+        let server = CreationFixtureServer { _ in FixtureReply("{}", failure: .cancelled) }
+        let audio = CreationAudioPlayer()
+        defer { audio.stop() }
+        audio.preview(CreationMusic(spec: "qqvip:NEW123:song"), api: server.api)
+        for _ in 0..<100 {
+            if !audio.isLoading { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(audio.isLoading)
+        XCTAssertNil(audio.playingID)
+        XCTAssertNil(audio.message)
+        XCTAssertEqual(server.recorded.count, 1)
+    }
+
+    @MainActor func testSearchResultPreviewReportsServiceFailureAndRemainsSelectable() async throws {
+        let server = CreationFixtureServer { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if query.contains(where: { $0.name == "op" && $0.value == "search" }) {
+                return FixtureReply(#"{"tracks":[{"mid":"NEW123","name":"新搜索歌曲","artist":"歌手"}],"playlists":[]}"#)
+            }
+            if query.contains(where: { $0.name == "op" && $0.value == "status" }) {
+                return FixtureReply(#"{"available":true,"loggedIn":true,"playable":false,"detail":"探测歌曲未返回播放地址"}"#)
+            }
+            return FixtureReply(#"{"error":"QQ 音乐服务暂不可用"}"#, status: 502)
+        }
+        let api = server.api
+        let model = MusicPickerModel(api: api, store: store())
+        model.query = "新搜索歌曲"
+        for _ in 0..<100 {
+            if !model.isLoading { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let music = try XCTUnwrap(model.results.first)
+        let audio = CreationAudioPlayer()
+        defer { audio.stop(); model.cancel() }
+        audio.preview(music, api: api)
+        XCTAssertTrue(audio.isLoading)
+        for _ in 0..<100 {
+            if audio.message?.contains("探测歌曲未返回播放地址") == true { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(audio.isLoading)
+        XCTAssertNil(audio.playingID)
+        XCTAssertTrue(audio.message?.contains("QQ 音乐服务暂不可用") == true)
+        XCTAssertTrue(audio.message?.contains("探测歌曲未返回播放地址") == true)
+        XCTAssertNil(model.selection, "试听不应代替用户选择")
+        model.select(music)
+        XCTAssertEqual(model.selection?.marker?.id, "NEW123")
+        let requests = server.recorded
+        XCTAssertEqual(requests.count, 3, "一次搜索、一次歌曲解析、失败后一次健康检查")
+        let trackRequest = try XCTUnwrap(requests.first { $0.url?.path == "/api/music/qq" })
+        XCTAssertTrue(trackRequest.url!.query!.contains("id=NEW123"))
+        XCTAssertTrue(trackRequest.url!.query!.contains("type=track"))
     }
 
     @MainActor func testMusicQueryGenerationRejectsOldResultsAndManualLinks() async throws {

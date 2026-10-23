@@ -328,6 +328,7 @@ final class AdminAPIClient: @unchecked Sendable {
     /// session model uses this to return the app to the login screen instead
     /// of leaving a stale, apparently empty admin page on screen.
     var unauthorizedHandler: (() -> Void)?
+    @MainActor lazy var commentStore = AdminCommentStore(api: self)
     private let session: URLSession
     private let decoder: JSONDecoder
     private let cookieStorage: HTTPCookieStorage
@@ -363,6 +364,7 @@ final class AdminAPIClient: @unchecked Sendable {
     }
 
     func logout() async {
+        await commentStore.clear()
         let url = siteRoot.appendingPathComponent("api/admin/logout")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -416,29 +418,65 @@ final class AdminAPIClient: @unchecked Sendable {
         _ = try await sendWithoutBody(method: "DELETE", path: "posts/\(id)")
     }
 
-    func fetchComments(page: Int = 1, limit: Int = 20, status: AdminCommentFilter = .all) async throws -> AdminPage<AdminComment> {
-        let query = [
+    func fetchComments(page: Int = 1, limit: Int = 20, status: AdminCommentFilter = .all, momentID: Int? = nil) async throws -> AdminPage<AdminComment> {
+        var query = [
             URLQueryItem(name: "page", value: String(page)),
             URLQueryItem(name: "limit", value: String(limit)),
             URLQueryItem(name: "status", value: status.rawValue),
         ]
+        if let momentID {
+            query += [URLQueryItem(name: "target_type", value: "moment"), URLQueryItem(name: "target_id", value: String(momentID))]
+        }
         let envelope = try await get(path: "comments", queryItems: query, as: [AdminComment].self)
         return try makePage(envelope, page: page, limit: limit)
     }
 
     func updateComment(id: Int, action: AdminCommentAction, reply: String? = nil) async throws -> AdminComment {
         let envelope = try await send(method: "PATCH", path: "comments/\(id)", body: AdminCommentActionRequest(action: action.rawValue, reply: reply), as: AdminComment.self)
-        return try requireData(envelope)
+        let comment = try requireData(envelope)
+        await commentStore.didUpdate(comment)
+        return comment
     }
 
     func deleteComment(id: Int) async throws {
         _ = try await sendWithoutBody(method: "DELETE", path: "comments/\(id)")
+        await commentStore.didDelete(id)
     }
 
     func fetchMoments(page: Int = 1, limit: Int = 20) async throws -> AdminPage<AdminMoment> {
         let query = pageQuery(page: page, limit: limit)
         let envelope = try await get(path: "moments", queryItems: query, as: [AdminMoment].self)
         return try makePage(envelope, page: page, limit: limit)
+    }
+
+    func fetchBackups() async throws -> AdminBackupOverview {
+        try requireData(await get(path: "native-backups", as: AdminBackupOverview.self))
+    }
+
+    func startBackup(action: String, kind: String, backupID: String? = nil) async throws -> AdminBackupJob {
+        let body = AdminBackupOperation(action: action, kind: kind, backupId: backupID, confirmation: action == "restore" ? backupID : nil)
+        return try requireData(await send(method: "POST", path: "native-backups", body: body, as: AdminBackupJob.self))
+    }
+
+    func downloadBackup(_ backup: AdminBackup) async throws -> URL {
+        var request = URLRequest(url: makeURL(path: "native-backups/download", queryItems: [URLQueryItem(name: "id", value: backup.id)]))
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 300
+        let configuration = session.configuration
+        configuration.timeoutIntervalForResource = 3600
+        let downloadSession = URLSession(configuration: configuration)
+        defer { downloadSession.finishTasksAndInvalidate() }
+        let (temporary, response) = try await downloadSession.download(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            try? FileManager.default.removeItem(at: temporary)
+            if (response as? HTTPURLResponse)?.statusCode == 401 { unauthorizedHandler?() }
+            throw APIError.transport("下载失败，请确认登录状态或刷新备份列表。")
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("yezi-backup-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent((backup.name as NSString).lastPathComponent)
+        try FileManager.default.moveItem(at: temporary, to: destination)
+        return destination
     }
 
     func createMoment(_ payload: AdminMomentWriteRequest) async throws -> AdminMoment {
@@ -611,7 +649,7 @@ final class AdminAPIClient: @unchecked Sendable {
         return try requireData(envelope).values
     }
 
-    func uploadFile(data: Data, filename: String, mimeType: String, postID: Int? = nil, original: Bool = false) async throws -> AdminAttachment {
+    func uploadFile(data: Data, filename: String, mimeType: String, postID: Int? = nil, original: Bool = false, progress: (@Sendable (Double) -> Void)? = nil) async throws -> AdminAttachment {
         guard !data.isEmpty else { throw APIError.emptyData }
         guard data.count <= Self.maxUploadBytes else {
             throw APIError.transport("文件不能超过 25 MB，请压缩后重试")
@@ -629,7 +667,8 @@ final class AdminAPIClient: @unchecked Sendable {
             method: "POST",
             url: siteRoot.appendingPathComponent("api/admin/upload"),
             body: body,
-            contentType: "multipart/form-data; boundary=\(boundary)"
+            contentType: "multipart/form-data; boundary=\(boundary)",
+            uploadProgress: progress
         )
         do {
             return try decoder.decode(AdminUploadResponse.self, from: response).attachment
@@ -695,6 +734,16 @@ final class AdminAPIClient: @unchecked Sendable {
             body: nil
         )
         return try decodeDirect(response, as: AdminQQMusicPlaylistPlaybackResponse.self)
+    }
+
+    /// Browse metadata without resolving audio for every row. Older websites return
+    /// only their first page; nextOffset stays nil and the UI reports partial data.
+    func fetchQQMusicPlaylistMetadata(id: String, offset: Int = 0) async throws -> AdminMusicMetadataPage {
+        let response = try await requestData(method: "GET", url: makeSiteURL(path: "api/music/qq", queryItems: [
+            URLQueryItem(name: "id", value: id), URLQueryItem(name: "type", value: "playlist-metadata"),
+            URLQueryItem(name: "offset", value: String(offset)), URLQueryItem(name: "limit", value: "50")
+        ]), body: nil)
+        return try decodeDirect(response, as: AdminMusicMetadataPage.self)
     }
 
     func fetchQQMusicStatus() async throws -> AdminQQMusicStatus {
@@ -1008,7 +1057,7 @@ final class AdminAPIClient: @unchecked Sendable {
         return url
     }
 
-    private func requestData(method: String, url: URL, body: Data?, contentType: String = "application/json") async throws -> Data {
+    private func requestData(method: String, url: URL, body: Data?, contentType: String = "application/json", uploadProgress: (@Sendable (Double) -> Void)? = nil) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -1019,7 +1068,14 @@ final class AdminAPIClient: @unchecked Sendable {
         request.httpBody = body
 
         do {
-            let (data, response) = try await session.data(for: request)
+            let data: Data
+            let response: URLResponse
+            if let uploadProgress, let body {
+                request.httpBody = nil
+                (data, response) = try await session.upload(for: request, from: body, delegate: CreationUploadProgress(report: uploadProgress))
+            } else {
+                (data, response) = try await session.data(for: request)
+            }
             guard let http = response as? HTTPURLResponse else { throw APIError.transport("服务器响应无效") }
             if http.statusCode == 401 {
                 clearLocalSessionCookie()
@@ -1312,6 +1368,15 @@ struct AdminCommentCounts: Decodable, Sendable {
     let pending: Int?
 }
 
+private final class CreationUploadProgress: NSObject, URLSessionTaskDelegate, Sendable {
+    let report: @Sendable (Double) -> Void
+    init(report: @escaping @Sendable (Double) -> Void) { self.report = report }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        report(min(1, Double(totalBytesSent) / Double(totalBytesExpectedToSend)))
+    }
+}
+
 struct AdminPostSummary: Decodable, Identifiable, Sendable {
     let id: Int
     let title: String
@@ -1323,6 +1388,7 @@ struct AdminPostSummary: Decodable, Identifiable, Sendable {
     let createdAt: String?
     let updatedAt: String?
     let metrics: ContentMetrics?
+    var excerpt: String? = nil
 }
 
 struct AdminPostDetail: Decodable, Identifiable, Sendable {
@@ -1451,11 +1517,44 @@ struct AdminComment: Decodable, Identifiable, Sendable {
     let nickname: String
     let email: String?
     let website: String?
+    let avatar: String?
+    let avatarUrl: String?
     let content: String
     let status: String
     let createdAt: String?
     let adminReply: String?
     let repliedAt: String?
+
+    var displayAvatar: String? { avatar?.trimmedNonEmpty ?? avatarUrl?.trimmedNonEmpty }
+
+    var displayTargetLabel: String? {
+        guard let label = targetLabel?.trimmedNonEmpty else { return nil }
+        guard targetType == "moment" else { return label }
+        var mediaLabel: String?
+        for block in MarkdownParser.parse(label) {
+            let text: String?
+            switch block {
+            case .paragraph(let value), .heading(_, let value), .quote(let value): text = value
+            case .unorderedList(let items), .orderedList(let items): text = items.joined(separator: " · ")
+            case .music(let spec):
+                let marker = MarkdownParser.musicMarker(from: spec)
+                let names = [marker?.title, marker?.artist].compactMap { $0?.trimmedNonEmpty }
+                if mediaLabel == nil { mediaLabel = names.isEmpty ? "音乐絮语" : names.joined(separator: " · ") }
+                text = nil
+            case .image(_, let alt):
+                if mediaLabel == nil { mediaLabel = alt.trimmedNonEmpty ?? "照片絮语" }
+                text = nil
+            case .video:
+                if mediaLabel == nil { mediaLabel = "视频絮语" }
+                text = nil
+            default: text = nil
+            }
+            if let text, let plain = String(MarkdownParser.attributed(text).characters).trimmedNonEmpty {
+                return plain.components(separatedBy: .newlines).filter { !$0.isEmpty }.joined(separator: " ")
+            }
+        }
+        return mediaLabel ?? "絮语"
+    }
 }
 
 struct AdminAttachment: Decodable, Sendable {
@@ -1678,10 +1777,32 @@ struct AdminQQMusicPlaylistPlaybackResponse: Decodable, Sendable {
     }
 }
 
+struct AdminMusicMetadataPage: Decodable, Sendable {
+    let tracks: [AdminMusicTrack]
+    let total: Int
+    let availableTotal: Int?
+    let nextOffset: Int?
+}
+
 struct AdminQQMusicStatus: Decodable, Sendable {
     let available: Bool
     let loggedIn: Bool
     let uin: String?
+    var playable: Bool? = nil
+    var healthStatus: String? = nil
+    var detail: String? = nil
+
+    var playbackWarning: String? {
+        guard !loggedIn || !available || playable == false else { return nil }
+        if !loggedIn { return "QQ 音乐尚未登录或登录已失效，请到「管理 → 音乐」使用 QQ 音乐 App 重新扫码。" }
+        let reason = detail?.trimmedNonEmpty ?? (available ? "音乐服务没有返回播放地址。" : "音乐服务暂时不可用。")
+        return "QQ 音乐已登录，但试听服务异常：\(reason) 可到「管理 → 音乐」检查状态或使用 QQ 音乐 App 重新扫码。"
+    }
+
+    var displayLabel: String {
+        if loggedIn { return playable == false ? "已登录 · 播放异常" : "已登录" }
+        return available ? "尚未登录 QQ 音乐" : "QQ 音乐服务不可用"
+    }
 }
 
 struct AdminQQMusicQR: Decodable, Sendable {
@@ -1896,6 +2017,36 @@ private struct AdminReferencePreviewResponse: Decodable {
     }
 }
 
+struct AdminBackup: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let kind: String
+    let size: Int64
+    let createdAt: String
+    var title: String { kind == "complete" ? "完整加密备份" : "数据库备份" }
+}
+struct AdminBackupJob: Decodable, Sendable {
+    let id: String
+    let action: String
+    let kind: String
+    let status: String
+    let message: String?
+    let resultId: String?
+    var isRunning: Bool { !["succeeded", "failed"].contains(status) }
+}
+struct AdminBackupOverview: Decodable, Sendable {
+    let backups: [AdminBackup]
+    let job: AdminBackupJob?
+    let completeEnabled: Bool
+    let restoreEnabled: Bool
+}
+private struct AdminBackupOperation: Encodable, Sendable {
+    let action: String
+    let kind: String
+    let backupId: String?
+    let confirmation: String?
+}
+
 struct AdminMoment: Decodable, Identifiable, Sendable {
     let id: Int
     let content: String
@@ -1903,6 +2054,9 @@ struct AdminMoment: Decodable, Identifiable, Sendable {
     let createdAt: String?
     let updatedAt: String?
     let metrics: ContentMetrics?
+    var location: String? = nil
+    var commentCount: Int? = nil
+    var tags: [String]? = nil
 }
 
 struct AdminWork: Decodable, Identifiable, Sendable {

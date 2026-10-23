@@ -2,6 +2,42 @@ import Foundation
 import UIKit
 
 enum CreationPreview {
+    /// Offline UI tests use an actual local silent WAV, never a fabricated network URL.
+    static var musicPlaybackURL: URL? {
+#if DEBUG
+        guard isEnabled, !ProcessInfo.processInfo.arguments.contains("--preview-music-unavailable") else { return nil }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("yezi-preview-silence.wav")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            let bytes: UInt32 = 8_000 * 2 * 60
+            var data = Data("RIFF".utf8)
+            func append<T: FixedWidthInteger>(_ value: T) { var little = value.littleEndian; withUnsafeBytes(of: &little) { data.append(contentsOf: $0) } }
+            append(bytes + 36); data.append(Data("WAVEfmt ".utf8)); append(UInt32(16)); append(UInt16(1)); append(UInt16(1)); append(UInt32(8_000)); append(UInt32(16_000)); append(UInt16(2)); append(UInt16(16)); data.append(Data("data".utf8)); append(bytes); data.append(Data(count: Int(bytes)))
+            do { try data.write(to: url, options: .atomic) } catch { return nil }
+        }
+        return url
+#else
+        return nil
+#endif
+    }
+    static var aiImageSettings: AIImageSettings? {
+#if DEBUG
+        if isEnabled { return AIImageSettings(address: "https://creation-preview.invalid/v1", model: "offline-fixture", apiKey: "offline-fixture") }
+#endif
+        return nil
+    }
+
+    @MainActor static func makeAIImageService() -> AIImageService? {
+#if DEBUG
+        guard isEnabled else { return nil }
+        CreationPreviewURLProtocol.setGenerationData(UIImage(named: "EditorialPreview")?.jpegData(compressionQuality: 0.8) ?? Data())
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CreationPreviewURLProtocol.self]
+        configuration.httpCookieStorage = nil
+        return AIImageService(session: URLSession(configuration: configuration))
+#else
+        return nil
+#endif
+    }
     static var isEnabled: Bool {
 #if DEBUG
         ProcessInfo.processInfo.arguments.contains("--creation-preview")
@@ -107,23 +143,60 @@ enum CreationPreview {
 
 #if DEBUG
 final class CreationPreviewURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let generationLock = NSLock()
+    nonisolated(unsafe) private static var generationData = Data()
+    static func setGenerationData(_ data: Data) { generationLock.withLock { generationData = data } }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func stopLoading() {}
     override func startLoading() {
+        var requestBody = request.httpBody
+        if requestBody == nil, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var bytes = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                bytes.append(buffer, count: count)
+            }
+            requestBody = bytes
+        }
         let path = request.url?.path ?? ""
+        if path == "/v1/images/generations", let url = request.url,
+           let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"]) {
+            let image = Self.generationLock.withLock { Self.generationData.base64EncodedString() }
+            let data = try! JSONSerialization.data(withJSONObject: ["data": [["b64_json": image]]])
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         let method = request.httpMethod ?? "GET"
+        let musicUnavailable = ProcessInfo.processInfo.arguments.contains("--preview-music-unavailable")
+        if musicUnavailable, path == "/api/music/qq",
+           URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: { $0.name == "type" && $0.value == "track" }) == true {
+            let response = HTTPURLResponse(url: request.url!, statusCode: 502, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"error":"QQ 音乐服务暂不可用，请稍后再试"}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         let data: Data
         let date = "2026-10-03T08:30:00.000Z"
         let music = MarkdownParser.makeMusicSpec(id: "003OUlho2HcRHC", type: "song", title: "晴天", artist: "周杰伦", cover: "/cover.jpg")
+        let foldedMusic = MarkdownParser.makeMusicSpec(id: "003OUlho2HcRHC", type: "song", folded: true, title: "晴天", artist: "周杰伦", cover: "/cover.jpg")
         let moments: [[String: Any]] = [
-            ["id": 101, "content": "天气很好，路过一家小花店。\n买了一束没有名字的花，放在窗边。", "images": ["/uploads/preview-0.jpg"], "createdAt": date],
+            ["id": 101, "content": "天气很好，路过一家小花店。\n买了一束没有名字的花，放在窗边。\n\n#生活 #摄影\n\n!music \(foldedMusic)", "images": ["/uploads/preview-0.jpg", "/uploads/preview-1.jpg"], "createdAt": date, "location": "郑州市", "commentCount": 1],
             ["id": 102, "content": "今天的循环播放。\n\n!music \(music)", "images": [], "createdAt": date],
             ["id": 103, "content": "", "images": ["/uploads/preview-0.jpg", "/uploads/preview-1.jpg"], "createdAt": date],
+            ["id": 104, "content": "最后一首，留给今晚。\n\n!music \(music)", "images": [], "createdAt": date],
         ]
+        let avatar = "data:image/svg+xml," + "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 72 72\"><rect width=\"72\" height=\"72\" rx=\"14\" fill=\"hsl(244 42% 91%)\"/><circle cx=\"30\" cy=\"30\" r=\"24\" fill=\"hsl(277 52% 62%)\" opacity=\".9\"/><path d=\"M-8 59C11 56 31 58 80 49V80H-8Z\" fill=\"hsl(244 38% 74%)\"/><circle cx=\"53\" cy=\"51\" r=\"7\" fill=\"hsl(277 48% 96%)\" opacity=\".72\"/></svg>".addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
         let comments: [[String: Any]] = [
-            ["id": 401, "targetType": "post", "targetId": 201, "targetLabel": "在日常里，找一点风景", "nickname": "小满", "content": "很喜欢这句话。慢下来以后，好像真的能看见更多原来被忽略的小事。谢谢你的分享！", "status": "pending", "createdAt": "2026-10-15T08:20:00Z"],
-            ["id": 402, "targetType": "moment", "targetId": 101, "targetLabel": "路过的小花店", "nickname": "山间来信", "content": "给平凡的一天添一点颜色，真好。", "status": "pending", "createdAt": "2026-10-14T09:20:00Z"],
+            ["id": 401, "targetType": "post", "targetId": 201, "targetLabel": "在日常里，找一点风景", "nickname": "小满", "avatar": avatar, "content": "很喜欢这句话。慢下来以后，好像真的能看见更多原来被忽略的小事。谢谢你的分享！", "status": "pending", "createdAt": "2026-10-15T08:20:00Z"],
+            ["id": 402, "targetType": "moment", "targetId": 101, "targetLabel": "天气很好，路过一家小花店。", "nickname": "山间来信", "content": "给平凡的一天添一点颜色，真好。", "status": "pending", "createdAt": "2026-10-14T09:20:00Z"],
             ["id": 403, "targetType": "post", "targetId": 201, "targetLabel": "在日常里，找一点风景", "nickname": "木木", "content": "看完也想带着相机去散散步。", "status": "approved", "createdAt": date, "adminReply": "一起去找找秋天的光吧。"]
         ]
         let works: [[String: Any]] = [
@@ -136,13 +209,19 @@ final class CreationPreviewURLProtocol: URLProtocol, @unchecked Sendable {
         ]
         var post: [String: Any] = ["id": 201, "title": "在日常里，找一点风景", "slug": "everyday-landscape", "content": "不必走得很远，日常也有值得留下的瞬间。\n\n## 走慢一点\n\n每天经过的小路，今天有了不一样的光。树影落在墙上，像一封写给傍晚的信。\n\n> 我们总是急着抵达，却忘了路上的风景。", "category": "随笔", "tags": ["日常"], "status": "published", "cover": "/uploads/preview-0.jpg", "createdAt": date, "attachmentIds": [], "referenceSnapshots": []]
         let object: Any
-        if path == "/api/admin/v1/comments" {
+        if path == "/api/admin/v1/native-backups" {
+            object = ["data": ["backups": [
+                ["id": "complete:data-20261023-demo.tar.gz.enc", "name": "data-20261023-demo.tar.gz.enc", "kind": "complete", "size": 48308224, "createdAt": "2026-10-23T08:30:00Z"],
+                ["id": "database:blog-20261023-demo.db", "name": "blog-20261023-demo.db", "kind": "database", "size": 524288, "createdAt": "2026-10-23T07:20:00Z"]
+            ], "completeEnabled": true, "restoreEnabled": true, "job": ["id": "preview", "action": "create", "kind": "complete", "status": "succeeded", "message": "完整加密备份已完成"]]]
+        } else if path == "/api/admin/v1/comments" {
             let status = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "status" })?.value ?? "all"
-            let filtered = comments.filter { status == "all" || $0["status"] as? String == status }
+            let targetID = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "target_id" })?.value.flatMap(Int.init)
+            let filtered = comments.filter { (status == "all" || $0["status"] as? String == status) && (targetID == nil || ($0["targetId"] as? Int == targetID && $0["targetType"] as? String == "moment")) }
             object = ["data": filtered, "meta": ["page": 1, "limit": 20, "total": filtered.count, "totalPages": 1]]
         } else if path.hasPrefix("/api/admin/v1/comments/") {
             var value = comments.first { String($0["id"] as? Int ?? 0) == path.components(separatedBy: "/").last } ?? comments[0]
-            if let body = request.httpBody, let update = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+            if let body = requestBody, let update = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
                 if update["action"] as? String == "reply" { value["adminReply"] = update["reply"] }
                 else { value["status"] = update["action"] as? String == "approve" ? "approved" : "spam" }
             }
@@ -153,23 +232,43 @@ final class CreationPreviewURLProtocol: URLProtocol, @unchecked Sendable {
         else if path == "/api/admin/v1/references" { object = ["data": references, "meta": ["page": 1, "total": references.count, "totalPages": 1]] }
         else if path.hasPrefix("/api/admin/v1/references/") && path.hasSuffix("/reader") { object = ["data": ["id": 701, "title": "在快节奏的生活里，重新发现慢设计", "sourceName": "生活与设计", "author": "林间", "summary": "让设计回到人的日常，多留一点空白，照顾细小的感受。", "markdown": "## 把时间还给生活\n\n好的设计，不需要我们不停地追赶。它让日常的动作变得自然，让平凡的物件有了陪伴的温度。\n\n## 从细节开始\n\n- 给阅读留出空白\n- 让常用操作触手可及\n- 保留属于自己的节奏\n\n> 慢一点，往往能看得更清楚。", "capturedAt": date, "report": ["textCharacters": 3280, "cachedImages": 6]]] }
         else if path == "/api/admin/v1/dashboard" { object = ["data": ["posts": ["total": 20, "published": 18, "draft": 2], "comments": ["pending": 2], "moments": 32, "works": 2, "attachments": 4, "recentPosts": [], "recentComments": comments]] }
-        else if path == "/api/admin/v1/moments" && method == "GET" { object = ["data": moments, "meta": ["current_page": 1, "per_page": 20, "total_count": 3, "pages": 1]] }
+        else if path == "/api/admin/v1/moments" && method == "GET" { object = ["data": moments, "meta": ["current_page": 1, "per_page": 20, "total_count": moments.count, "pages": 1]] }
         else if path.contains("/moments") && ["POST", "PATCH"].contains(method) {
             var value = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]) ?? [:]
             value["id"] = 301; value["createdAt"] = date; object = ["data": value]
-        } else if path == "/api/admin/v1/posts" && method == "GET" { var draft = post; draft["id"] = 202; draft["title"] = "十月的阅读与写作清单"; draft["status"] = "draft"; draft["cover"] = ""; object = ["data": [post, draft], "meta": ["page": 1, "limit": 20, "total": 1, "totalPages": 1]] }
+        } else if path == "/api/admin/v1/posts" && method == "GET" {
+            post["excerpt"] = "不必走得很远，日常也有值得留下的瞬间。每天经过的小路，今天有了不一样的光。树影落在墙上，像一封写给傍晚的信。"
+            var draft = post; draft["id"] = 202; draft["title"] = "十月的阅读与写作清单，留一点时间给自己"; draft["status"] = "draft"; draft["cover"] = ""
+            draft["excerpt"] = "给忙碌的日常留一段安静的时间，读完手边的书，记下那些值得回味的话。这个月想完成的几件小事，都整理在这里。"
+            draft["tags"] = ["阅读", "写作", "生活"]
+            object = ["data": [post, draft], "meta": ["page": 1, "limit": 20, "total": 2, "totalPages": 1]]
+        }
         else if path.contains("/posts") {
             if let body = request.httpBody, let value = try? JSONSerialization.jsonObject(with: body) as? [String: Any] { post.merge(value) { _, new in new } }
             object = ["data": post]
         } else if path == "/api/admin/qq-music" {
             let operation = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "op" })?.value
-            if operation == "status" { object = ["available": true, "loggedIn": true, "uin": "100001"] }
-            else { object = ["tracks": [["mid": "003OUlho2HcRHC", "name": "晴天", "artist": "周杰伦", "album": "叶惠美", "cover": "/cover.jpg"], ["mid": "002J4UUk29y8BY", "name": "稻香", "artist": "周杰伦", "album": "魔杰座", "cover": "/cover.jpg"]], "playlists": [["id": "123456", "name": "散步的时候听", "creator": "叶子", "count": 12, "cover": "/cover.jpg"]]] }
+            if operation == "status" {
+                var status: [String: Any] = ["available": true, "loggedIn": true, "uin": "100001", "playable": !musicUnavailable]
+                if musicUnavailable { status["detail"] = "账号登录有效，探测歌曲未返回播放地址。" }
+                object = status
+            }
+            else { object = ["tracks": [["mid": "003OUlho2HcRHC", "name": "晴天", "artist": "周杰伦", "album": "叶惠美", "cover": "/cover.jpg"], ["mid": "002J4UUk29y8BY", "name": "稻香", "artist": "周杰伦", "album": "魔杰座", "cover": "/cover.jpg"]], "playlists": [["id": "123456", "name": "散步的时候听", "creator": "叶子", "count": 217, "cover": "/cover.jpg"]]] }
         } else if path == "/api/music/qq" {
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
-            if query.first(where: { $0.name == "type" })?.value == "playlist" { object = ["tracks": [], "total": 12, "skipped": 12] }
-            else { object = ["mid": query.first(where: { $0.name == "id" })?.value ?? "", "name": "晴天", "artist": "周杰伦", "album": "叶惠美", "cover": "/cover.jpg"] }
-        } else if path == "/api/admin/upload" { object = ["attachment": ["id": 801, "path": "/uploads/local-preview.jpg", "originalName": "照片.jpg", "mimeType": "image/jpeg", "size": 1000, "createdAt": date]] }
+            if query.first(where: { $0.name == "type" })?.value == "playlist-metadata" {
+                let offset = Int(query.first(where: { $0.name == "offset" })?.value ?? "0") ?? 0
+                let end = min(offset + 50, 217)
+                let tracks: [[String: Any]] = (offset..<max(offset, end)).map { index in
+                    ["mid": index == 0 ? "003OUlho2HcRHC" : index == 1 ? "002J4UUk29y8BY" : "PreviewSong\(index)", "name": index == 0 ? "晴天" : index == 1 ? "稻香" : "散步随想 \(index + 1)", "artist": index < 2 ? "周杰伦" : "叶子", "cover": "/cover.jpg"]
+                }
+                object = ["tracks": tracks, "total": 217, "availableTotal": 217, "nextOffset": end < 217 ? end as Any : NSNull()]
+            } else if query.first(where: { $0.name == "type" })?.value == "playlist" { object = ["tracks": [], "total": 12, "skipped": 12] }
+            else {
+                let mid = query.first(where: { $0.name == "id" })?.value ?? ""
+                object = ["mid": mid, "name": mid == "002J4UUk29y8BY" ? "稻香" : "晴天", "artist": "周杰伦", "album": "叶惠美", "cover": "/cover.jpg"]
+            }
+        } else if path == "/api/admin/upload" { object = ["path": "/uploads/local-preview.jpg", "attachment": ["id": 801, "path": "/uploads/local-preview.jpg", "originalName": "照片.jpg", "mimeType": "image/jpeg", "size": 1000, "createdAt": date]] }
         else if path == "/api/admin/v1/attachments" {
             let files: [[String: Any]] = [
                 ["id": 901, "path": "/uploads/travel.md", "originalName": "旅行的备忘录.md", "mimeType": "text/markdown", "size": 2400, "createdAt": "2026-10-15T09:00:00Z", "referenced": false],

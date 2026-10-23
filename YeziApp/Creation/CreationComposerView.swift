@@ -3,9 +3,97 @@ import PhotosUI
 import UIKit
 import AVFoundation
 import ImageIO
+import UniformTypeIdentifiers
 
 enum CreationIntent { case text, photos, music }
-private enum CreationSheet: String, Identifiable { case music, settings, reference, attachment, cover, video, preview, camera; var id: String { rawValue } }
+private enum CreationSheet: String, Identifiable { case music, settings, reference, attachment, cover, video, preview, camera, imageOptions, aiImage; var id: String { rawValue } }
+
+private struct CreationPickedVideo: Transferable, Sendable {
+    let data: Data
+    let mime: String
+    let filename: String
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .movie) { received in
+            let values = try received.file.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
+            guard let size = values.fileSize, size > 0, size <= 20 * 1024 * 1024 else {
+                throw APIError.transport("视频需小于 20 MB，请在相册裁剪后重试。")
+            }
+            let ext = received.file.pathExtension.lowercased()
+            guard ["mov", "mp4", "m4v"].contains(ext) else { throw APIError.transport("请选择 MP4 或 MOV 视频。") }
+            return CreationPickedVideo(data: try Data(contentsOf: received.file), mime: ext == "mov" ? "video/quicktime" : "video/mp4", filename: "video-\(UUID().uuidString).\(ext == "mov" ? "mov" : "mp4")")
+        }
+    }
+}
+
+private struct CreationVideoInsertSheet: View {
+    let api: AdminAPIClient
+    let onInsert: (String, AdminAttachment?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selection: PhotosPickerItem?
+    @State private var video: CreationPickedVideo?
+    @State private var link = ""
+    @State private var busy = false
+    @State private var progress: Double = 0
+    @State private var error: String?
+    @State private var uploadTask: Task<Void, Never>?
+    private var validLink: String? {
+        let raw = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: raw), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { return nil }
+        return url.absoluteString
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Group {
+                Section {
+                    PhotosPicker(selection: $selection, matching: .videos) { Label("从相册选择视频", systemImage: "video") }.disabled(busy)
+                } footer: { Text("支持 MP4、MOV，最大 20 MB。较长视频可使用链接插入。") }
+                if busy { Section { ProgressView(value: progress) { Text(progress >= 1 ? "服务器正在处理…" : "正在读取或上传视频…") } } }
+                if let error {
+                    Section {
+                        Text(error).foregroundStyle(.red)
+                        if video != nil { Button("重试上传") { startUpload() }.disabled(busy) }
+                    }
+                }
+                Section("视频链接") {
+                    TextField("https://", text: $link).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Button("插入链接") {
+                        guard let validLink else { return }
+                        onInsert(validLink, nil); dismiss()
+                    }.disabled(validLink == nil || busy)
+                }
+                }.listRowBackground(CreationDesign.surface)
+            }.scrollContentBackground(.hidden).background(CreationDesign.canvas)
+                .navigationTitle("插入视频").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { uploadTask?.cancel(); dismiss() } } }
+                .interactiveDismissDisabled(busy)
+                .task(id: selection) {
+                    guard let selection else { return }
+                    busy = true; error = nil; video = nil; progress = 0
+                    do {
+                        guard let picked = try await selection.loadTransferable(type: CreationPickedVideo.self) else { throw APIError.emptyData }
+                        guard !Task.isCancelled else { return }
+                        video = picked; startUpload()
+                    } catch { busy = false; if !isRequestCancellation(error) { self.error = error.localizedDescription } }
+                }
+                .onDisappear { uploadTask?.cancel() }
+        }
+    }
+    private func startUpload() {
+        guard let video else { return }
+        uploadTask?.cancel(); busy = true; error = nil; progress = 0
+        uploadTask = Task {
+            defer { busy = false }
+            do {
+                let attachment = try await api.uploadFile(data: video.data, filename: video.filename, mimeType: video.mime) { value in
+                    Task { @MainActor in progress = value }
+                }
+                guard !Task.isCancelled else { return }
+                onInsert(attachment.path, attachment); dismiss()
+            } catch { if !isRequestCancellation(error) { self.error = error.localizedDescription } }
+        }
+    }
+}
 
 struct CreationComposerView: View {
     @StateObject private var model: CreationComposerModel
@@ -14,12 +102,12 @@ struct CreationComposerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var focused = false
-    @State private var previewing = false
     @StateObject private var writing = MarkdownWritingController()
     @State private var sheet: CreationSheet?
     @State private var resumeWritingAfterSheet = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var showsPhotos = false
+    @State private var showsPhotosAfterSheet = false
     @State private var showsDiscard = false
     @State private var showsUncertainConfirmation = false
     @State private var replacingMusic: UUID?
@@ -35,7 +123,7 @@ struct CreationComposerView: View {
     private var title: String { article ? (model.draft.serverID == nil ? "写文章" : "编辑文章") : (model.draft.serverID == nil ? "写絮语" : "编辑絮语") }
 
     var body: some View {
-        editorLayout.background(CreationDesign.surface).foregroundStyle(CreationDesign.foreground).tint(CreationDesign.accent)
+        editorLayout.background(CreationDesign.canvas).foregroundStyle(CreationDesign.foreground).tint(CreationDesign.accent)
             .interactiveDismissDisabled()
             .photosPicker(isPresented: $showsPhotos, selection: $selectedPhotos, maxSelectionCount: max(1, 9 - model.draft.media.count), selectionBehavior: .ordered, matching: .images)
             .onChange(of: selectedPhotos) { _, items in
@@ -85,9 +173,16 @@ struct CreationComposerView: View {
         case .reference: AdminReferencePickerSheet(api: model.api, onSelect: model.insertReference)
         case .attachment: AdminAttachmentPickerSheet(api: model.api, postID: model.draft.serverID, selectedIDs: model.draft.attachmentIDs, onSelect: model.insertAttachment)
         case .cover: AdminAttachmentPickerSheet(api: model.api, postID: model.draft.serverID, selectedIDs: model.draft.attachmentIDs, onSelect: model.selectCover)
-        case .video: AdminVideoInsertSheet(onInsert: insertVideo)
+        case .video: CreationVideoInsertSheet(api: model.api) { url, attachment in
+            insertVideo(url)
+            if let attachment { model.registerGeneratedImage(attachment, asCover: false) }
+        }
         case .preview: AdminMarkdownPreviewSheet(content: model.previewContent, api: model.api, siteRoot: model.api.siteRoot, references: model.draft.references)
         case .camera: CreationCameraView(onFinish: finishCamera).ignoresSafeArea()
+        case .imageOptions: imageOptions.presentationDetents([.height(390)]).presentationDragIndicator(.visible).presentationBackground(.regularMaterial)
+        case .aiImage:
+            AIImageComposerView(allowsCover: article, service: CreationPreview.makeAIImageService() ?? AIImageService(),
+                                settings: CreationPreview.aiImageSettings, onInsert: insertGeneratedImage).presentationDetents([.large])
         }
     }
 
@@ -99,9 +194,10 @@ struct CreationComposerView: View {
     }
 
     private func resumeWriting() {
+        if showsPhotosAfterSheet { showsPhotosAfterSheet = false; showsPhotos = true }
         guard resumeWritingAfterSheet else { return }
         resumeWritingAfterSheet = false
-        guard model.canEdit, !model.isSaving, !previewing else { return }
+        guard model.canEdit, !model.isSaving else { return }
         focused = true
     }
 
@@ -111,44 +207,59 @@ struct CreationComposerView: View {
         Task { await model.prepareImage(id: id, data: data) }
     }
 
-    private func insertVideo(_ url: String) { model.edit { $0.text += "\n\n!video:\(url)\n" } }
+    private func insertVideo(_ url: String) {
+        let snippet = "\n\n!video \(url)\n"
+        if !writing.insert(snippet) { model.edit { $0.text += snippet } }
+        resumeWritingAfterSheet = true
+    }
+
+    private var imageOptions: some View {
+        VStack(spacing: 0) {
+            Text("添加图片").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 20)
+            imageOption("AI 生图", detail: "描述画面，生成配图", symbol: "sparkle", accent: true) { sheet = .aiImage }
+            Divider().overlay(CreationDesign.border)
+            imageOption("拍照", detail: "用相机记录这一刻", symbol: "camera") { openCamera() }.disabled(model.draft.media.count >= 9)
+            Divider().overlay(CreationDesign.border)
+            imageOption("插入图片", detail: "从相册选择", symbol: "photo") { showsPhotosAfterSheet = true; sheet = nil }.disabled(model.draft.media.count >= 9)
+            Divider().overlay(CreationDesign.border)
+            Button("取消") { sheet = nil }.frame(maxWidth: .infinity, minHeight: 48)
+        }.padding(.horizontal, 20).foregroundStyle(CreationDesign.foreground)
+    }
+
+    private func imageOption(_ title: String, detail: String, symbol: String, accent: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 20) {
+                Image(systemName: symbol).font(.system(size: 25)).foregroundStyle(accent ? CreationDesign.accent : CreationDesign.foreground).frame(width: 32)
+                VStack(alignment: .leading, spacing: 4) { Text(title).font(.body); Text(detail).font(.caption).foregroundStyle(CreationDesign.secondary) }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(CreationDesign.secondary)
+            }.frame(maxWidth: .infinity, minHeight: 76).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityIdentifier("image-option.\(title)")
+    }
+
+    private func insertGeneratedImage(_ data: Data, asCover: Bool) async throws {
+        guard model.canEdit, !model.isSaving else { throw AIImageError.message("当前内容暂不能编辑。") }
+        let prepared = try await CreationImageProcessor.prepare(data)
+        let attachment = try await model.api.uploadFile(data: prepared.data, filename: "ai-\(UUID().uuidString).\(prepared.extensionName)", mimeType: prepared.mimeType)
+        let snippet = "\n\n![AI 配图](\(attachment.path))\n\n"
+        if !writing.insert(snippet) { model.edit { $0.text += snippet } }
+        model.registerGeneratedImage(attachment, asCover: asCover)
+        resumeWritingAfterSheet = true
+    }
 
     private var editorLayout: some View {
         VStack(spacing: 0) {
             header
-            if article {
-                HStack(spacing: 16) {
-                    Text("Markdown").font(.caption.weight(.medium)).foregroundStyle(CreationDesign.secondary)
-                    Picker("写作模式", selection: $previewing) {
-                        Text("编辑").tag(false)
-                        Text("预览").tag(true)
-                    }.pickerStyle(.segmented).frame(maxWidth: 190)
-                    Spacer(minLength: 0)
-                    Text("\(model.draft.text.count) 字").font(.caption).foregroundStyle(CreationDesign.secondary)
-                }.padding(.horizontal, 20).padding(.vertical, 10)
-                .onChange(of: previewing) { _, value in if value { focused = false } }
-            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     saveStatus
                     recoveryControls
-                    if previewing {
-                        Text(model.draft.title.isEmpty ? "未命名文章" : model.draft.title).font(.system(.title, design: .serif, weight: .bold))
-                        ForEach(Array(creationMarkdownBlocks(model.previewContent, references: model.draft.references).enumerated()), id: \.offset) { _, block in
-                            AdminPreviewMarkdownBlock(block: block, api: model.api, siteRoot: model.api.siteRoot)
-                        }
-                    } else {
-                        writingCanvas
-                        attachments
-                    }
-                    if article {
-                        Button { focused = false; sheet = .settings } label: { Label("发布设置 · 分类、封面与引用", systemImage: "slider.horizontal.3").frame(minHeight: 44) }.disabled(model.isSaving || !model.canEdit)
-                    }
+                    writingCanvas
+                    attachments
                     if let blocker = model.submitBlocker { Text(blocker).font(.subheadline).foregroundStyle(CreationDesign.secondary).accessibilityLabel("暂不能发布：\(blocker)") }
                 }.padding(20)
             }.scrollDismissesKeyboard(.interactively)
-            if article && !previewing { MarkdownFormatBar(controller: writing).disabled(model.isSaving || !model.canEdit) }
-            mediaBar
+            if article { articleToolbar } else { mediaBar }
         }
     }
 
@@ -179,7 +290,7 @@ struct CreationComposerView: View {
     @ViewBuilder private var writingCanvas: some View {
         if article {
             TextField("文章标题", text: model.binding(\.title), axis: .vertical)
-                .font(.title.weight(.semibold)).padding(.vertical, 8).disabled(model.isSaving || !model.canEdit)
+                .font(CreationDesign.editorial(32, relativeTo: .title, bold: true)).padding(.vertical, 12).disabled(model.isSaving || !model.canEdit)
         }
         ZStack(alignment: .topLeading) {
             if model.draft.text.isEmpty { Text(article ? "从这里开始写作…" : "这一刻，想说点什么…").foregroundStyle(CreationDesign.secondary).padding(.top, 12).padding(.leading, 5).allowsHitTesting(false) }
@@ -203,19 +314,81 @@ struct CreationComposerView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Button { focused = false; Task { if await model.close() { dismiss() } } } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }.accessibilityLabel("关闭编辑器").disabled(model.isSaving)
-            Spacer(minLength: 0)
-            Text(title).font(.headline)
-            Spacer(minLength: 0)
+        ZStack {
+            if article {
+                Menu { articleOptions } label: {
+                    HStack(spacing: 5) {
+                        Text(title).font(.headline)
+                        Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium)).foregroundStyle(CreationDesign.secondary)
+                    }.frame(minHeight: 44).contentShape(Rectangle())
+                }.accessibilityLabel("文章选项").accessibilityIdentifier("article.options")
+                    .disabled(model.isSaving || !model.canEdit)
+            } else { Text(title).font(.headline) }
+            HStack {
+            Button { focused = false; Task { if await model.close() { dismiss() } } } label: {
+                Text("取消").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            }.accessibilityLabel("关闭编辑器").disabled(model.isSaving)
+            Spacer()
             Button(model.isSaving ? "提交中…" : (article ? (model.draft.status == "published" ? "更新文章" : "发布") : (model.draft.serverID == nil ? "发布" : "保存修改"))) {
                 focused = false
                 Task {
                     if await model.submit(), model.didPublish { UIImpactFeedbackGenerator(style: .light).impactOccurred(); onPublished(); dismiss() }
                 }
-            }.buttonStyle(CreationPrimaryButtonStyle()).disabled(model.submitBlocker != nil).opacity(model.submitBlocker == nil ? 1 : 0.5)
-        }.padding(.horizontal, 12).padding(.vertical, 6).background(CreationDesign.surface)
-            .overlay(alignment: .bottom) { Rectangle().fill(CreationDesign.border).frame(height: 1) }
+            }.foregroundStyle(CreationDesign.accent).frame(minWidth: 44, minHeight: 44)
+                .disabled(model.submitBlocker != nil).opacity(model.submitBlocker == nil ? 1 : 0.5)
+            }.font(.subheadline)
+        }.buttonStyle(.plain).padding(.horizontal, 16).padding(.vertical, 4).background(CreationDesign.canvas)
+            .overlay(alignment: .bottom) { Rectangle().fill(CreationDesign.border).frame(height: 0.5) }
+    }
+
+    @ViewBuilder private var articleOptions: some View {
+        Section {
+            Button("撤销", systemImage: "arrow.uturn.backward") { writing.undo() }.disabled(!writing.canUndo)
+            Button("重做", systemImage: "arrow.uturn.forward") { writing.redo() }.disabled(!writing.canRedo)
+            Menu("更多格式", systemImage: "textformat") {
+                ForEach([MarkdownAction.italic, .quote, .numbered, .task, .code, .codeBlock, .divider], id: \.self) { action in
+                    Button(action.title, systemImage: action.symbol) { writing.apply(action) }
+                }
+            }
+        }
+        Section {
+            Button("发布设置", systemImage: "slider.horizontal.3") { focused = false; sheet = .settings }
+            Button("插入视频", systemImage: "video") { focused = false; sheet = .video }
+            Button("引用文章", systemImage: "quote.opening") { focused = false; sheet = .reference }
+            Button("选择已有附件", systemImage: "paperclip") { focused = false; sheet = .attachment }
+        }
+        Section("\(model.draft.text.count) 字") {
+            Button("舍弃草稿", role: .destructive) { showsDiscard = true }
+        }
+    }
+
+    private var articleToolbar: some View {
+        HStack(spacing: 0) {
+            articleTool("加粗", symbol: "bold", letter: "B") { writing.apply(.bold) }
+            articleTool("标题", symbol: "textformat.size", letter: "H") { writing.apply(.heading) }
+            articleTool("链接", symbol: "link") { writing.apply(.link) }
+            articleTool("列表", symbol: "list.bullet") { writing.apply(.bullet) }
+            Rectangle().fill(CreationDesign.border).frame(width: 0.5, height: 28).padding(.horizontal, 4)
+            articleTool("图片", symbol: "photo") { focused = false; sheet = .imageOptions }
+            articleTool("视频", symbol: "video") { focused = false; sheet = .video }
+            articleTool("音乐", symbol: "music.note") { focused = false; replacingMusic = model.draft.music.first?.id; sheet = .music }
+            articleTool("预览", symbol: "eye") { focused = false; sheet = .preview }
+        }.padding(.horizontal, 10).padding(.vertical, 5)
+            .background(CreationDesign.canvas)
+            .overlay(alignment: .top) { Rectangle().fill(CreationDesign.border).frame(height: 0.5) }
+            .disabled(model.isSaving || !model.canEdit)
+    }
+
+    private func articleTool(_ title: String, symbol: String, letter: String? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Group {
+                    if let letter { Text(letter).font(.system(size: 21, weight: .medium, design: .serif)) }
+                    else { Image(systemName: symbol).font(.system(size: 18, weight: .regular)) }
+                }.frame(height: 23)
+                Text(title).font(.system(size: 10)).foregroundStyle(CreationDesign.secondary)
+            }.frame(maxWidth: .infinity, minHeight: 46).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel(title).accessibilityIdentifier("article.tool.\(title)")
     }
 
     private func musicCard(_ music: CreationMusic) -> some View {
@@ -228,22 +401,20 @@ struct CreationComposerView: View {
 
     private var mediaBar: some View {
         HStack(spacing: 0) {
-            Button { focused = false; showsPhotos = true } label: { CreationToolLabel(title: "照片", symbol: "photo") }.disabled(model.draft.media.count >= 9)
-            if !article {
-                Button { focused = false; openCamera() } label: { CreationToolLabel(title: "拍照", symbol: "camera") }.disabled(model.draft.media.count >= 9)
-            }
+            Button { focused = false; sheet = .imageOptions } label: { CreationToolLabel(title: "图片", symbol: "photo") }
+            Button { focused = false; sheet = .video } label: { CreationToolLabel(title: "视频", symbol: "video") }
             Button { focused = false; replacingMusic = model.draft.music.first?.id; sheet = .music } label: { CreationToolLabel(title: "音乐", symbol: "music.note") }
             Menu {
                 if article {
                     Button("发布设置") { focused = false; sheet = .settings }
                 }
                 Button("Markdown 预览") { focused = false; sheet = .preview }
-                Button("插入视频") { focused = false; sheet = .video }
                 Button("引用文章") { focused = false; sheet = .reference }
                 Button("选择已有附件") { focused = false; sheet = .attachment }
                 Button("舍弃草稿", role: .destructive) { showsDiscard = true }
             } label: { CreationToolLabel(title: "更多", symbol: "ellipsis") }
-        }.font(.subheadline.weight(.medium)).padding(.horizontal, 8).background(CreationDesign.soft).disabled(model.isSaving || !model.canEdit)
+        }.font(.subheadline.weight(.medium)).foregroundStyle(CreationDesign.foreground).padding(.horizontal, 8).background(CreationDesign.canvas)
+            .overlay(alignment: .top) { Rectangle().fill(CreationDesign.border).frame(height: 0.5) }.disabled(model.isSaving || !model.canEdit)
     }
 
     private func openCamera() {

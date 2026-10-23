@@ -207,6 +207,13 @@ final class CreationComposerModel: ObservableObject {
         }
     }
 
+    func registerGeneratedImage(_ attachment: AdminAttachment, asCover: Bool) {
+        edit { draft in
+            if let id = attachment.id, !draft.attachmentIDs.contains(id) { draft.attachmentIDs.append(id) }
+            if asCover && draft.kind == .post { draft.cover = attachment.path }
+        }
+    }
+
     func submit(serverDraft: Bool = false) async -> Bool {
         guard !isSaving, canEdit, !isLoading, draft.submission != .uncertain else { return false }
         if !serverDraft, let blocker = submitBlocker { errorMessage = blocker; return false }
