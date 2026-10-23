@@ -7,6 +7,7 @@
 - 上传前完整单元测试 **115 项通过**（`/private/tmp/yezi-build29-unit.xcresult`）；备份及行内评论的浅色/深色大字 **2 项 UI 回归通过**（`/private/tmp/yezi-build29-backup-ui.xcresult`）。播放器的常规屏、小屏与深色验证详见下节。
 - 网站基于远端最新 `82cca17` 独立整合，没有用旧本地树覆盖远端。App 备份协议改用 `/api/admin/v1/native-backups`，保留网站现有备份接口与云备份流程；共享任务锁、文件锁及部署锁，归档排除恢复任务目录。网站完整测试 **380 项通过、1 项跳过**，TypeScript、定向 ESLint 及生产构建通过（`/private/tmp/yezi-web-release29-{tests-final,types-final,lint,build}.log`）。
 - 网站新增接口仍需部署后生效。本轮没有在真实网站执行备份或恢复，没有部署生产网站。网站原工作目录中的既有修改保留。
+- App 源码已推送 GitHub main，提交 `c3c3e0f`。网站使用 [PR #49](https://github.com/aluvien/yezi-blog/pull/49) 经过受保护分支的检查流程；CI 发现的旧依赖问题已定向修补至 Next/eslint-config-next 16.4.3、sanitize-html 2.18.1 与 follow-redirects 1.16.1，生产依赖扫描为 0 个漏洞。依赖修补后完整测试仍为 380 项通过、1 项跳过，覆盖率行 88.71%、分支 78.19%、函数 88.06%，生产构建和独立生产包 HTTP 检查通过。
 
 ## 2026-10-23 音乐播放器交互重做（本地，未发布）
 
