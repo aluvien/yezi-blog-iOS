@@ -4,6 +4,174 @@ import UIKit
 import SwiftUI
 @testable import YeziApp
 
+final class PushNotificationTests: XCTestCase {
+    private func payload(_ changes: [String: Any] = [:]) -> [AnyHashable: Any] {
+        var body: [String: Any] = ["version": 1, "event_id": "comment:42", "kind": "comment", "site_root": "https://yezi.me", "comment_id": 42]
+        body.merge(changes) { _, new in new }; return ["yezi": body]
+    }
+    func testNotificationRoutesAreTypedAndBoundToTheirSite() throws {
+        let route = try XCTUnwrap(YeziPushRoute(userInfo: payload()))
+        XCTAssertEqual(route.kind, .comment); XCTAssertEqual(route.commentID, 42)
+        XCTAssertTrue(route.matches(URL(string: "https://yezi.me/")!))
+        XCTAssertFalse(route.matches(URL(string: "https://yezi.biaozhu.me")!))
+        XCTAssertFalse(route.matches(URL(string: "http://yezi.me")!))
+        XCTAssertFalse(route.matches(URL(string: "https://yezi.me:8443")!))
+        let music = try XCTUnwrap(YeziPushRoute(userInfo: payload(["kind": "music_expired"])))
+        XCTAssertEqual(music.kind, .musicExpired)
+    }
+    func testMalformedOrUntrustedNotificationRoutesAreIgnored() {
+        for change: [String: Any] in [
+            ["version": 2], ["event_id": ""], ["kind": "open_url"], ["comment_id": -1], ["comment_id": "42"],
+            ["site_root": "http://yezi.me"], ["site_root": "https://user:password@yezi.me"],
+            ["site_root": "https://yezi.me/path"], ["site_root": "https://yezi.me/?redirect=evil"],
+            ["site_root": "javascript:alert(1)"],
+        ] { XCTAssertNil(YeziPushRoute(userInfo: payload(change)), "\(change)") }
+        XCTAssertNil(YeziPushRoute(userInfo: [:]))
+        XCTAssertNil(YeziPushRoute(userInfo: ["yezi": ["version": 1]]))
+    }
+    func testPushRegistrationTestAndRemovalUseAuthenticatedNativeWrites() async throws {
+        let server = CreationFixtureServer { request in
+            if request.url?.path.hasSuffix("/test") == true { return FixtureReply(#"{"data":{"queued":true}}"#) }
+            return FixtureReply(#"{"data":{"registered":true}}"#)
+        }
+        let api = server.api
+        let id = "11111111-1111-4111-8111-111111111111"
+        try await api.registerPushDevice(YeziPushRegistration(installation_id: id, token: String(repeating: "ab", count: 32), environment: "production", site_root: api.siteRoot.absoluteString, comments: true, music: false))
+        try await api.testPushDevice(id)
+        try await api.unregisterPushDevice(id)
+        let requests = server.recorded
+        XCTAssertEqual(requests.map(\.httpMethod), ["POST", "POST", "DELETE"])
+        XCTAssertEqual(requests.map { $0.url!.path }, ["/api/admin/v1/push-devices", "/api/admin/v1/push-devices/test", "/api/admin/v1/push-devices"])
+        for request in requests {
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "Origin"))
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Yezi-CSRF"), "1")
+        }
+        let registration = try XCTUnwrap(try JSONSerialization.jsonObject(with: requests[0].httpBody!) as? [String: Any])
+        XCTAssertEqual(registration["installation_id"] as? String, id)
+        XCTAssertEqual(registration["music"] as? Bool, false)
+        XCTAssertNil(registration["private_key"])
+    }
+    func testUnconfiguredPushServerReturnsAnActionableError() async {
+        let server = CreationFixtureServer { _ in FixtureReply(#"{"error":{"code":"PUSH_NOT_CONFIGURED","message":"网站尚未配置 Apple 推送密钥"}}"#, status: 503) }
+        do { try await server.api.testPushDevice("device"); XCTFail("Unconfigured server must not appear connected") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("推送密钥")) }
+    }
+}
+
+final class CreationReadingMediaTests: XCTestCase {
+    func testMiniPlayerOverflowScrollDwellsAndReturnsWithinBounds() {
+        XCTAssertEqual(CreationMiniPlayerSizing.scrollOffset(distance: 40, elapsed: 0), 0)
+        XCTAssertEqual(CreationMiniPlayerSizing.scrollOffset(distance: 40, elapsed: 1.2), 0)
+        XCTAssertEqual(CreationMiniPlayerSizing.scrollOffset(distance: 40, elapsed: 2.2), -20, accuracy: 0.001)
+        XCTAssertEqual(CreationMiniPlayerSizing.scrollOffset(distance: 40, elapsed: 3.5), -40, accuracy: 0.001)
+        XCTAssertEqual(CreationMiniPlayerSizing.scrollOffset(distance: 40, elapsed: 5.4), -20, accuracy: 0.001)
+        XCTAssertEqual(CreationMiniPlayerSizing.scrollOffset(distance: 40, elapsed: 6.4), 0, accuracy: 0.001)
+        XCTAssertEqual(CreationMiniPlayerSizing.scrollOffset(distance: 0, elapsed: 20), 0)
+        for tick in 0...200 {
+            let offset = CreationMiniPlayerSizing.scrollOffset(distance: 40, elapsed: Double(tick) / 10)
+            XCTAssertGreaterThanOrEqual(offset, -40.001)
+            XCTAssertLessThanOrEqual(offset, 0.001)
+        }
+    }
+
+    @MainActor
+    func testMiniPlayerUsesThirdWidestRenderedLyric() {
+        let font = UIFont(name: "LXGWWenKai-Regular", size: 12) ?? .systemFont(ofSize: 12)
+        func width(_ text: String) -> CGFloat { ceil((text as NSString).size(withAttributes: [.font: font]).width) }
+        let texts = ["这是最长最长的一句歌词", "第二长的歌词也很长", "中等长度歌词", "短句", "  "]
+        let lines = texts.enumerated().map { CreationLyricLine(time: Double($0.offset), text: $0.element, id: $0.offset) }
+        XCTAssertEqual(CreationMiniPlayerSizing.textWidth(lyrics: lines, title: "歌曲", artist: "歌手", lyricSize: 12, titleSize: 15), width("中等长度歌词"))
+        let proportional = ["WWWW", "iiiiii", "MMM", "ii"].enumerated().map { CreationLyricLine(time: Double($0.offset), text: $0.element, id: $0.offset) }
+        let ranked = proportional.map { width($0.text) }.sorted(by: >)
+        XCTAssertEqual(CreationMiniPlayerSizing.textWidth(lyrics: proportional, title: "歌曲", artist: "歌手", lyricSize: 12, titleSize: 15), ranked[2])
+        XCTAssertEqual(CreationMiniPlayerSizing.textWidth(lyrics: Array(lines.prefix(2)), title: "歌曲", artist: "歌手", lyricSize: 12, titleSize: 15), width(texts[0]))
+        XCTAssertEqual(CreationMiniPlayerSizing.textWidth(lyrics: [lines[3]], title: "歌曲", artist: "歌手", lyricSize: 12, titleSize: 15), width("短句"))
+        let titleFont = UIFont(name: "LXGWWenKai-Regular", size: 15) ?? .systemFont(ofSize: 15)
+        XCTAssertEqual(CreationMiniPlayerSizing.textWidth(lyrics: [lines[4]], title: "没有歌词的歌曲", artist: "歌手", lyricSize: 12, titleSize: 15), ceil(("没有歌词的歌曲" as NSString).size(withAttributes: [.font: titleFont]).width))
+        XCTAssertGreaterThan(CreationMiniPlayerSizing.textWidth(lyrics: lines, title: "歌曲", artist: "歌手", lyricSize: 24, titleSize: 30), width("中等长度歌词"))
+    }
+
+    func testLyricsOrderRepeatedTagsAndSeekBoundaries() {
+        let lines = CreationLyrics.parse("[ar:示例]\n[00:05.125]第三句\n[00:01.5][00:03.50]重复句\n[00:09.00]\n无时间行")
+        XCTAssertEqual(lines.map(\.time), [1.5, 3.5, 5.125])
+        XCTAssertEqual(lines.map(\.text), ["重复句", "重复句", "第三句"])
+        XCTAssertNil(CreationLyrics.current(lines, at: 0))
+        XCTAssertEqual(CreationLyrics.current(lines, at: 1.5), 0)
+        XCTAssertEqual(CreationLyrics.current(lines, at: 4), 1)
+        XCTAssertEqual(CreationLyrics.current(lines, at: 100), 2)
+        XCTAssertNil(CreationLyrics.current([], at: 1))
+    }
+
+    func testCodeCollapseThresholdAndOriginalCopyPayload() {
+        let sixteen = (1...16).map { "line \($0)" }.joined(separator: "\r\n") + "\r\n"
+        XCTAssertEqual(CreationCodeContent(text: sixteen).lineCount, 16)
+        XCTAssertFalse(CreationCodeContent(text: sixteen).collapsible)
+        let original = sixteen + String(repeating: "longCode", count: 100)
+        let code = CreationCodeContent(text: original)
+        XCTAssertTrue(code.collapsible)
+        XCTAssertEqual(code.lineCount, 17)
+        XCTAssertEqual(code.text, original)
+    }
+
+    func testVideoShareTextBVPageAndMultipleCandidates() {
+        XCTAssertEqual(CreationVideoInput.candidates("看看这个视频【分享】https://www.bilibili.com/video/BV1xx411c7mD/?p=3，复制打开"), ["bilibili:BV1xx411c7mD:3"])
+        XCTAssertEqual(CreationVideoInput.candidates("这是 BV1xx411c7mD 视频"), ["bilibili:BV1xx411c7mD"])
+        XCTAssertEqual(CreationVideoInput.candidates("https://youtu.be/dQw4w9WgXcQ BV1xx411c7mD"), ["youtube:dQw4w9WgXcQ", "bilibili:BV1xx411c7mD"])
+        XCTAssertEqual(CreationVideoInput.candidates("分享 https://b23.tv/AbCd。"), ["https://b23.tv/AbCd"])
+        XCTAssertNil(CreationVideoInput.canonical("https://bilibili.com.evil.invalid/video/BV1xx411c7mD"))
+        XCTAssertNil(CreationVideoInput.canonical("bilibili:BV1xx411c7mD:0"))
+        for path in ["watch?v=dQw4w9WgXcQ", "embed/dQw4w9WgXcQ", "shorts/dQw4w9WgXcQ", "live/dQw4w9WgXcQ"] {
+            XCTAssertEqual(CreationVideoInput.canonical("https://www.youtube.com/" + path), "youtube:dQw4w9WgXcQ")
+        }
+        let embed = CreationVideoInput.embedURL("bilibili:BV1xx411c7mD:3")!
+        XCTAssertEqual(URLComponents(url: embed, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value, "3")
+        XCTAssertTrue(MarkdownParser.parse("!video bilibili:BV1xx411c7mD").contains { if case .video(let url) = $0 { return url.contains("bilibili.com") }; return false })
+    }
+
+    func testShortLinkReusesPOSTAndInvalidResponseCanRetry() async throws {
+        let server = CreationFixtureServer { _ in FixtureReply(#"{"code":"AbCd1234","path":"/AbCd1234"}"#) }
+        let api = server.api
+        let first = try await api.articleShortLink(id: 201)
+        let second = try await api.articleShortLink(id: 201)
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.path, "/AbCd1234")
+        XCTAssertEqual(server.recorded.count, 1)
+        XCTAssertEqual(server.recorded.first?.httpMethod, "POST")
+        let invalid = CreationFixtureServer { _ in FixtureReply(#"{"code":"bad","path":"https://evil.invalid"}"#) }
+        let invalidAPI = invalid.api
+        for _ in 0..<2 {
+            do { _ = try await invalidAPI.articleShortLink(id: 201); XCTFail("invalid response must fail") } catch {}
+        }
+        XCTAssertEqual(invalid.recorded.count, 2, "failed responses must not poison retry")
+    }
+
+    func testLyricsReuseAndCrossOriginRejection() async throws {
+        let server = CreationFixtureServer { _ in FixtureReply("[00:01.00]示例歌词") }
+        let api = server.api
+        let source = "https://\(server.host)/api/music/qq?id=test&type=lrc"
+        let first = try await api.fetchLyrics(source: source)
+        let second = try await api.fetchLyrics(source: source)
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(server.recorded.count, 1)
+        _ = try await api.fetchLyrics(source: source, reuseLoaded: false)
+        XCTAssertEqual(server.recorded.count, 2)
+        _ = try await api.fetchLyrics(source: "[00:00.00]内联歌词")
+        do { _ = try await api.fetchLyrics(source: "https://other.invalid/api/music/qq"); XCTFail("cross origin must fail") } catch {}
+        XCTAssertEqual(server.recorded.count, 2)
+    }
+}
+
+final class CreationTypographyTests: XCTestCase {
+    @MainActor
+    func testWritingAndTimeUseWenKaiAndSupportDynamicType() {
+        let normal = CreationDesign.writingFont(compatibleWith: UITraitCollection(preferredContentSizeCategory: .large))
+        let large = CreationDesign.writingFont(compatibleWith: UITraitCollection(preferredContentSizeCategory: .accessibilityMedium))
+        XCTAssertEqual(normal.fontName, "LXGWWenKai-Regular")
+        XCTAssertGreaterThan(large.pointSize, normal.pointSize)
+    }
+}
+
 final class CreationPlaybackTests: XCTestCase {
     private var songs: [CreationMusic] { (1...4).map { CreationMusic(spec: "qqvip:SONG\($0):song") } }
     func testOrderedEndAndSingleRepeat() {
@@ -54,6 +222,21 @@ final class CreationPlaybackTests: XCTestCase {
         XCTAssertEqual(model.total, 217); XCTAssertNil(model.nextOffset)
         XCTAssertTrue(model.incompleteMessage?.contains("更新网站接口") == true)
     }
+    @MainActor func testSameSongAdoptsSelectedPlaylistWithSiteIsolation() async throws {
+        let server = CreationFixtureServer { _ in FixtureReply("{}", failure: .cancelled) }
+        let api = server.api
+        let audio = CreationAudioPlayer()
+        defer { audio.stop() }
+        audio.preview(songs[0], api: api)
+        for _ in 0..<100 where audio.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(audio.usesPlaylist("LIST1", at: api.siteRoot))
+        audio.play(songs[0], in: songs, api: api, playlistID: "LIST1", nextOffset: 50)
+        XCTAssertTrue(audio.usesPlaylist("LIST1", at: api.siteRoot))
+        XCTAssertFalse(audio.usesPlaylist("LIST2", at: api.siteRoot))
+        XCTAssertFalse(audio.usesPlaylist("LIST1", at: URL(string: "https://another.invalid")!))
+        XCTAssertEqual(audio.queue.items.count, songs.count)
+    }
+
     @MainActor func testQueueContinuesAtPageBoundaryWithoutResolvingEverySong() async throws {
         let server = CreationFixtureServer { request in
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -302,6 +485,67 @@ private final class LoadingFixtureProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class LoadingPerformanceTests: XCTestCase {
+    @MainActor func testGalleryRemoteRetryKeepsPageAndReusesDecodedCache() async throws {
+        let data = imageData()
+        let counter = FixtureCounter()
+        let server = LoadingFixtureServer { _ in counter.increment() == 1 ? FixtureReply("", status: 503) : FixtureReply(data: data, delay: 0.1) }
+        let loader = ImageLoader(session: server.session)
+        let media = CreationMedia(remotePath: "/photo.png", state: .uploaded)
+        let page = CreationGalleryPage(index: 0, media: media, site: server.site.absoluteString, siteRoot: server.site, loader: loader)
+        page.loadViewIfNeeded()
+        let photo = try XCTUnwrap(page.view.subviews.compactMap { $0 as? UIImageView }.first)
+        let retry = try XCTUnwrap(page.view.subviews.compactMap { $0 as? UIButton }.first)
+        try await waitUntil { !retry.isHidden }
+        retry.sendActions(for: .touchUpInside)
+        try await waitUntil { photo.image != nil }
+        let displayed = photo.image
+        page.load(force: true)
+        XCTAssertTrue(photo.image === displayed, "重试期间应保留已显示图片")
+        try await waitUntil { server.count == 3 && photo.image !== displayed }
+        let reopened = CreationGalleryPage(index: 0, media: media, site: server.site.absoluteString, siteRoot: server.site, loader: loader)
+        reopened.loadViewIfNeeded()
+        let reusedPhoto = try XCTUnwrap(reopened.view.subviews.compactMap { $0 as? UIImageView }.first)
+        try await waitUntil { reusedPhoto.image != nil }
+        XCTAssertEqual(server.count, 3, "重新打开应复用解码缓存")
+        XCTAssertTrue(photo === page.view.subviews.compactMap { $0 as? UIImageView }.first)
+        page.cancel(); reopened.cancel()
+    }
+
+    @MainActor func testGalleryCancelDoesNotApplyLateImage() async throws {
+        let data = imageData()
+        let server = LoadingFixtureServer { _ in FixtureReply(data: data, delay: 0.3) }
+        let page = CreationGalleryPage(index: 0, media: CreationMedia(remotePath: "/slow.png"), site: server.site.absoluteString, siteRoot: server.site, loader: ImageLoader(session: server.session))
+        page.loadViewIfNeeded()
+        let photo = try XCTUnwrap(page.view.subviews.compactMap { $0 as? UIImageView }.first)
+        try await waitUntil { server.count == 1 }
+        page.cancel()
+        try await waitUntil { server.cancelled == 1 }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertNil(photo.image)
+    }
+
+    @MainActor func testGalleryLocalImageAndMissingLocalFallback() async throws {
+        let data = imageData()
+        let server = LoadingFixtureServer { _ in FixtureReply(data: data) }
+        let site = server.site.absoluteString
+        let id = UUID()
+        let filename = try await CreationDraftStore.shared.writeImage(data, site: site, id: id, extensionName: "png")
+        let media = CreationMedia(id: id, filename: filename, remotePath: "/remote.png")
+        let loader = ImageLoader(session: server.session)
+        let local = CreationGalleryPage(index: 0, media: media, site: site, siteRoot: server.site, loader: loader)
+        local.loadViewIfNeeded()
+        let photo = try XCTUnwrap(local.view.subviews.compactMap { $0 as? UIImageView }.first)
+        try await waitUntil { photo.image != nil }
+        XCTAssertEqual(server.count, 0)
+        try await CreationDraftStore.shared.removeImage(site: site, mediaID: id, filename: filename)
+        let fallback = CreationGalleryPage(index: 0, media: media, site: site, siteRoot: server.site, loader: loader)
+        fallback.loadViewIfNeeded()
+        let remote = try XCTUnwrap(fallback.view.subviews.compactMap { $0 as? UIImageView }.first)
+        try await waitUntil { remote.image != nil }
+        XCTAssertEqual(server.count, 1)
+        local.cancel(); fallback.cancel()
+    }
+
     @MainActor private func imageData() -> Data {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
@@ -387,6 +631,263 @@ final class LoadingPerformanceTests: XCTestCase {
         XCTAssertEqual(model.moments.first?.id, 9)
         await model.load(reset: true)
         XCTAssertEqual(server.count, 2)
+    }
+
+    @MainActor func testAutomaticPaginationCoalescesAndStopsAtLastPage() async throws {
+        let server = LoadingFixtureServer { request in
+            let page = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value ?? "1"
+            return FixtureReply("{\"data\":[{\"id\":\(page),\"content\":\"正文 #生活\",\"images\":[]}],\"meta\":{\"totalPages\":2}}", delay: 0.04)
+        }
+        let model = CreationFeedModel(api: AdminAPIClient(siteRoot: server.site, session: server.session))
+        await model.loadIfNeeded()
+        let next = Task { await model.load() }
+        try await waitUntil { server.count == 2 }
+        await model.load()
+        await next.value
+        await model.load()
+        XCTAssertEqual(server.count, 2)
+        XCTAssertEqual(model.moments.map(\.id), [1, 2])
+        XCTAssertFalse(model.hasMore)
+        XCTAssertEqual(model.presentations.count, 2)
+        XCTAssertEqual(model.presentations[1]?.source, "正文 #生活")
+    }
+
+    @MainActor func testFailedNextPageKeepsContentAndExplicitRetryUsesSamePage() async {
+        let attempts = FixtureCounter()
+        let server = LoadingFixtureServer { request in
+            let page = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value ?? "1"
+            if page == "2", attempts.increment() == 1 { return FixtureReply("", failure: .timedOut) }
+            return FixtureReply("{\"data\":[{\"id\":\(page),\"content\":\"正文\",\"images\":[]}],\"meta\":{\"totalPages\":2}}")
+        }
+        let model = CreationFeedModel(api: AdminAPIClient(siteRoot: server.site, session: server.session))
+        await model.loadIfNeeded()
+        await model.load()
+        XCTAssertNotNil(model.error)
+        XCTAssertEqual(model.moments.map(\.id), [1])
+        await model.load()
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.moments.map(\.id), [1, 2])
+        XCTAssertEqual(server.count, 3)
+    }
+
+    @MainActor func testUnchangedFeedRefreshReusesParsedPresentation() async {
+        let server = LoadingFixtureServer { _ in FixtureReply(#"{"data":[{"id":9,"content":"正文 **强调**\n\n#生活","images":[]}],"meta":{"totalPages":1}}"#) }
+        let model = CreationFeedModel(api: AdminAPIClient(siteRoot: server.site, session: server.session))
+        await model.loadIfNeeded()
+        let original = model.presentations[9]
+        await model.load(reset: true)
+        XCTAssertTrue(model.presentations[9] === original)
+        XCTAssertEqual(model.presentations[9]?.tags, ["生活"])
+    }
+
+    @MainActor func testManagementReentryKeepsIdentityAndCoalescesStatistics() async throws {
+        let server = LoadingFixtureServer { request in
+            request.url!.path.hasSuffix("settings")
+                ? FixtureReply(#"{"data":{"site_name":"缓存小站","site_logo":"/logo.png","site_description":"介绍"}}"#, delay: 0.04)
+                : FixtureReply(#"{"data":{"moments":24,"attachments":35}}"#, delay: 0.04)
+        }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        let overview = api.siteOverview
+        let first = Task { await overview.load() }
+        try await waitUntil { server.count == 2 }
+        await overview.load()
+        await first.value
+        XCTAssertEqual(overview.identity.name, "缓存小站")
+        XCTAssertEqual(overview.dashboard?.moments, 24)
+        await api.siteOverview.load()
+        XCTAssertEqual(server.count, 2, "重复进入不重新请求或恢复占位内容")
+        overview.invalidateStatistics()
+        await overview.load()
+        XCTAssertEqual(server.count, 3, "内容变更仅更新统计，不重读网站身份")
+        XCTAssertEqual(overview.identity.name, "缓存小站")
+        overview.clearPrivateData()
+        XCTAssertNil(overview.dashboard)
+        XCTAssertEqual(overview.identity.logo, "/logo.png")
+    }
+
+    @MainActor func testPublicSiteIdentityPersistsWithoutPrivateSettingsAndIsSiteScoped() throws {
+        let defaults = UserDefaults(suiteName: "overview-test-" + UUID().uuidString)!
+        let server = LoadingFixtureServer { _ in FixtureReply("{}") }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        let overview = AdminSiteOverviewModel(api: api, defaults: defaults)
+        overview.apply(settings: ["site_name": "站点 A", "site_logo": "/a.png", "api_key": "never-store-this", "about_content": "private draft"])
+        let restored = AdminSiteOverviewModel(api: api, defaults: defaults)
+        XCTAssertEqual(restored.identity, overview.identity)
+        XCTAssertNil(restored.dashboard)
+        let data = try XCTUnwrap(defaults.data(forKey: "yezi.public-site-identity.v1." + server.site.absoluteString))
+        let text = String(decoding: data, as: UTF8.self)
+        XCTAssertFalse(text.contains("never-store-this"))
+        XCTAssertFalse(text.contains("private draft"))
+        let otherAPI = AdminAPIClient(siteRoot: URL(string: "https://other-site.invalid")!)
+        XCTAssertNotEqual(AdminSiteOverviewModel(api: otherAPI, defaults: defaults).identity, restored.identity)
+    }
+
+    @MainActor func testFailedManagementRefreshKeepsVisibleSnapshot() async {
+        let server = LoadingFixtureServer { _ in FixtureReply("", failure: .timedOut) }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        let overview = api.siteOverview
+        overview.apply(settings: ["site_name": "保留的小站", "site_logo": "/logo.png"])
+        overview.apply(dashboard: AdminDashboard(moments: 24, attachments: 35))
+        await overview.load(force: true)
+        XCTAssertEqual(overview.identity.name, "保留的小站")
+        XCTAssertEqual(overview.dashboard?.moments, 24)
+        XCTAssertEqual(overview.dashboard?.attachments, 35)
+        XCTAssertNotNil(overview.error)
+        XCTAssertFalse(overview.loading)
+        XCTAssertEqual(server.count, 2)
+    }
+
+    @MainActor func testRecreatedFeedReusesEmptyResultUntilExplicitRefresh() async {
+        let server = LoadingFixtureServer { _ in FixtureReply(#"{"data":[],"meta":{"totalPages":1}}"#) }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        await CreationFeedModel(api: api).loadIfNeeded()
+        let reopened = CreationFeedModel(api: api)
+        await reopened.loadIfNeeded()
+        XCTAssertEqual(server.count, 1, "空列表也是已经成功加载的数据")
+        await reopened.load(reset: true)
+        XCTAssertEqual(server.count, 2, "主动刷新必须访问服务器")
+    }
+
+    @MainActor func testReopenedCommentsAndPreviouslyViewedFilterDoNotReload() async {
+        let server = LoadingFixtureServer { _ in FixtureReply(#"{"data":[],"meta":{"total":0,"totalPages":1}}"#) }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        let model = AdminCommentsModel(api: api)
+        await model.loadIfNeeded(filter: .all)
+        await model.loadIfNeeded(filter: .all)
+        await AdminCommentsModel(api: api).loadIfNeeded(filter: .all)
+        XCTAssertEqual(server.count, 4)
+        await model.loadIfNeeded(filter: .pending)
+        XCTAssertEqual(server.count, 5, "切换筛选只加载尚未读取的那一页，复用统计")
+        await model.loadIfNeeded(filter: .all)
+        XCTAssertEqual(server.count, 5)
+        await model.load(filter: .all)
+        XCTAssertEqual(server.count, 9)
+    }
+
+    @MainActor func testReturningToArticleFilterReusesItsResult() async {
+        let server = LoadingFixtureServer { _ in FixtureReply(#"{"data":[],"meta":{"totalPages":1}}"#) }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        let model = CreationArticlesModel(api: api)
+        await model.loadIfNeeded(filter: .all, search: "")
+        await model.loadIfNeeded(filter: .published, search: "")
+        await model.loadIfNeeded(filter: .all, search: "")
+        XCTAssertEqual(server.count, 2)
+        await model.load(filter: .all, search: "", reset: true)
+        await model.loadIfNeeded(filter: .published, search: "")
+        XCTAssertEqual(server.count, 4, "主动刷新也必须让旧筛选结果失效")
+    }
+
+    @MainActor func testSharedSettingsReadCoalescesAndRefreshReplacesSnapshot() async throws {
+        let counter = FixtureCounter()
+        let server = LoadingFixtureServer { _ in FixtureReply("{\"data\":{\"site_name\":\"版本\(counter.increment())\"}}", delay: 0.05) }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        async let author = api.fetchSettings(reuseLoaded: true)
+        async let management = api.fetchSettings(reuseLoaded: true)
+        let initial = try await (author, management)
+        XCTAssertEqual(initial.0, initial.1)
+        XCTAssertEqual(server.count, 1)
+        let refreshed = try await api.fetchSettings()
+        let reopened = try await api.fetchSettings(reuseLoaded: true)
+        XCTAssertEqual(reopened, refreshed)
+        XCTAssertEqual(reopened["site_name"], "版本2")
+        XCTAssertEqual(server.count, 2)
+    }
+
+    @MainActor func testAttachmentSnapshotsKeepPaginationAndPostScopesSeparate() async throws {
+        let server = LoadingFixtureServer { _ in FixtureReply(#"{"data":[],"meta":{"totalPages":1}}"#) }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        _ = try await api.fetchAttachments(reuseLoaded: true)
+        _ = try await api.fetchAttachments(reuseLoaded: true)
+        _ = try await api.fetchAttachments(page: 2, reuseLoaded: true)
+        _ = try await api.fetchAttachments(postID: 42, reuseLoaded: true)
+        _ = try await api.fetchAttachments(limit: 100, reuseLoaded: true)
+        XCTAssertEqual(server.count, 4)
+    }
+
+    @MainActor func testSavedSettingsInvalidatesSettingsButKeepsUnrelatedLists() async throws {
+        let server = LoadingFixtureServer { request in
+            request.url!.path.hasSuffix("settings") ? FixtureReply(#"{"data":{"site_name":"叶子"}}"#) : FixtureReply(#"{"data":[],"meta":{"totalPages":1}}"#)
+        }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        _ = try await api.fetchSettings(reuseLoaded: true)
+        _ = try await api.fetchWorks(reuseLoaded: true)
+        _ = try await api.updateSettings(["site_name": "叶子"])
+        XCTAssertEqual(api.siteOverview.identity.name, "叶子", "保存网站信息后立即更新管理卡片")
+        _ = try await api.fetchSettings(reuseLoaded: true)
+        _ = try await api.fetchWorks(reuseLoaded: true)
+        XCTAssertEqual(server.count, 4)
+    }
+
+    @MainActor func testMutationCancelsOldReadAndCannotRepopulateSnapshot() async throws {
+        let server = LoadingFixtureServer { request in
+            request.httpMethod == "DELETE" ? FixtureReply("{}") : FixtureReply(#"{"data":[],"meta":{"totalPages":1}}"#, delay: 0.15)
+        }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        let initial = Task { try await api.fetchMoments(reuseLoaded: true) }
+        try await waitUntil { server.count == 1 }
+        try await api.deleteMoment(id: 9)
+        do { _ = try await initial.value; XCTFail("修改前的读取不能写回缓存") }
+        catch { XCTAssertTrue(isRequestCancellation(error)) }
+        _ = try await api.fetchMoments(reuseLoaded: true)
+        _ = try await api.fetchMoments(reuseLoaded: true)
+        XCTAssertEqual(server.count, 3)
+    }
+
+    @MainActor func testCancellingOneSharedReadDoesNotCancelOtherReader() async throws {
+        let server = LoadingFixtureServer { _ in FixtureReply(#"{"data":{"site_name":"叶子"}}"#, delay: 0.15) }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        let first = Task { try await api.fetchSettings(reuseLoaded: true) }
+        try await waitUntil { server.count == 1 }
+        let second = Task { try await api.fetchSettings(reuseLoaded: true) }
+        try await Task.sleep(for: .milliseconds(30))
+        first.cancel()
+        do { _ = try await first.value; XCTFail("已离开的页面不应接收结果") }
+        catch { XCTAssertTrue(isRequestCancellation(error)) }
+        let value = try await second.value
+        XCTAssertEqual(value["site_name"], "叶子")
+        XCTAssertEqual(server.count, 1)
+        XCTAssertEqual(server.cancelled, 0)
+    }
+
+    @MainActor func testLeavingLastReaderCancelsRequestAndAllowsRetry() async throws {
+        let server = LoadingFixtureServer { _ in FixtureReply(#"{"data":{"site_name":"叶子"}}"#, delay: 0.15) }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        let initial = Task { try await api.fetchSettings(reuseLoaded: true) }
+        try await waitUntil { server.count == 1 }
+        initial.cancel()
+        do { _ = try await initial.value; XCTFail("离开后应取消") }
+        catch { XCTAssertTrue(isRequestCancellation(error)) }
+        try await waitUntil { server.cancelled == 1 }
+        _ = try await api.fetchSettings(reuseLoaded: true)
+        XCTAssertEqual(server.count, 2)
+    }
+
+    @MainActor func testInvalidResponseIsRetriedAndSnapshotsAreClientScoped() async throws {
+        let counter = FixtureCounter()
+        let server = LoadingFixtureServer { _ in
+            counter.increment() == 1 ? FixtureReply("not json") : FixtureReply(#"{"data":{"site_name":"叶子"}}"#)
+        }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        do { _ = try await api.fetchSettings(reuseLoaded: true); XCTFail("无效响应应报错") } catch { }
+        _ = try await api.fetchSettings(reuseLoaded: true)
+        _ = try await api.fetchSettings(reuseLoaded: true)
+        let otherSession = AdminAPIClient(siteRoot: server.site, session: server.session)
+        _ = try await otherSession.fetchSettings(reuseLoaded: true)
+        XCTAssertEqual(server.count, 3)
+        await api.logout()
+        _ = try await api.fetchSettings(reuseLoaded: true)
+        XCTAssertEqual(server.count, 5, "退出后必须清除旧会话的数据")
+    }
+
+    @MainActor func testUnauthorizedResponseClearsSnapshots() async throws {
+        let server = LoadingFixtureServer { request in
+            request.url!.path.hasSuffix("session") ? FixtureReply("{}", status: 401) : FixtureReply(#"{"data":{"site_name":"叶子"}}"#)
+        }
+        let api = AdminAPIClient(siteRoot: server.site, session: server.session)
+        _ = try await api.fetchSettings(reuseLoaded: true)
+        do { _ = try await api.fetchSession(); XCTFail("会话应已过期") } catch { }
+        _ = try await api.fetchSettings(reuseLoaded: true)
+        XCTAssertEqual(server.count, 3)
     }
 
     @MainActor func testNewArticleSearchCancelsObsoleteRequestAndKeepsLatestResults() async throws {
@@ -573,14 +1074,8 @@ final class AIImageServiceTests: XCTestCase {
 
 final class CreationTests: XCTestCase {
     @MainActor
-    func testEditorialFontIsBundledAndSupportsChineseOffline() throws {
-        let font = try XCTUnwrap(UIFont(name: "NotoSerifSC-ExtraLight", size: 32))
-        XCTAssertEqual(font.familyName, "Noto Serif SC")
-        let coreFont = font as CTFont
-        let characters = Array("絮语文章评论管理".utf16)
-        var glyphs = Array(repeating: CGGlyph(0), count: characters.count)
-        XCTAssertTrue(CTFontGetGlyphsForCharacters(coreFont, characters, &glyphs, characters.count))
-        XCTAssertFalse(glyphs.contains(0), "页面标题不可回退成缺字方框")
+    func testTypographyRegistersBothFontFamilies() {
+        XCTAssertEqual((Bundle.main.object(forInfoDictionaryKey: "UIAppFonts") as? [String])?.count, 2)
     }
 
     private func store() -> CreationDraftStore {

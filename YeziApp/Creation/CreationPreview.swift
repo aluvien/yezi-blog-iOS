@@ -6,6 +6,7 @@ enum CreationPreview {
     static var musicPlaybackURL: URL? {
 #if DEBUG
         guard isEnabled, !ProcessInfo.processInfo.arguments.contains("--preview-music-unavailable") else { return nil }
+        if ProcessInfo.processInfo.arguments.contains("--preview-network-audio-failure") { return URL(string: "https://127.0.0.1:9/failed.mp3") }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("yezi-preview-silence.wav")
         if !FileManager.default.fileExists(atPath: url.path) {
             let bytes: UInt32 = 8_000 * 2 * 60
@@ -187,12 +188,16 @@ final class CreationPreviewURLProtocol: URLProtocol, @unchecked Sendable {
         let date = "2026-10-03T08:30:00.000Z"
         let music = MarkdownParser.makeMusicSpec(id: "003OUlho2HcRHC", type: "song", title: "晴天", artist: "周杰伦", cover: "/cover.jpg")
         let foldedMusic = MarkdownParser.makeMusicSpec(id: "003OUlho2HcRHC", type: "song", folded: true, title: "晴天", artist: "周杰伦", cover: "/cover.jpg")
-        let moments: [[String: Any]] = [
+        var moments: [[String: Any]] = [
             ["id": 101, "content": "天气很好，路过一家小花店。\n买了一束没有名字的花，放在窗边。\n\n#生活 #摄影\n\n!music \(foldedMusic)", "images": ["/uploads/preview-0.jpg", "/uploads/preview-1.jpg"], "createdAt": date, "location": "郑州市", "commentCount": 1],
             ["id": 102, "content": "今天的循环播放。\n\n!music \(music)", "images": [], "createdAt": date],
             ["id": 103, "content": "", "images": ["/uploads/preview-0.jpg", "/uploads/preview-1.jpg"], "createdAt": date],
             ["id": 104, "content": "最后一首，留给今晚。\n\n!music \(music)", "images": [], "createdAt": date],
         ]
+        if ProcessInfo.processInfo.arguments.contains("--preview-lyric-cards") {
+            moments = Array(moments.prefix(2))
+            moments[0]["images"] = []
+        }
         let avatar = "data:image/svg+xml," + "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 72 72\"><rect width=\"72\" height=\"72\" rx=\"14\" fill=\"hsl(244 42% 91%)\"/><circle cx=\"30\" cy=\"30\" r=\"24\" fill=\"hsl(277 52% 62%)\" opacity=\".9\"/><path d=\"M-8 59C11 56 31 58 80 49V80H-8Z\" fill=\"hsl(244 38% 74%)\"/><circle cx=\"53\" cy=\"51\" r=\"7\" fill=\"hsl(277 48% 96%)\" opacity=\".72\"/></svg>".addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
         let comments: [[String: Any]] = [
             ["id": 401, "targetType": "post", "targetId": 201, "targetLabel": "在日常里，找一点风景", "nickname": "小满", "avatar": avatar, "content": "很喜欢这句话。慢下来以后，好像真的能看见更多原来被忽略的小事。谢谢你的分享！", "status": "pending", "createdAt": "2026-10-15T08:20:00Z"],
@@ -208,8 +213,17 @@ final class CreationPreviewURLProtocol: URLProtocol, @unchecked Sendable {
             ["id": 702, "url": "https://example.com/reading", "title": "给自己留一段安静阅读的时间", "sourceName": "阅读笔记", "author": "远山", "summary": "从每天的二十页开始，让阅读成为生活里可以期待的一段时间。", "updatedAt": date, "tags": ["阅读"]]
         ]
         var post: [String: Any] = ["id": 201, "title": "在日常里，找一点风景", "slug": "everyday-landscape", "content": "不必走得很远，日常也有值得留下的瞬间。\n\n## 走慢一点\n\n每天经过的小路，今天有了不一样的光。树影落在墙上，像一封写给傍晚的信。\n\n> 我们总是急着抵达，却忘了路上的风景。", "category": "随笔", "tags": ["日常"], "status": "published", "cover": "/uploads/preview-0.jpg", "createdAt": date, "attachmentIds": [], "referenceSnapshots": []]
-        let object: Any
-        if path == "/api/admin/v1/native-backups" {
+        if ProcessInfo.processInfo.arguments.contains("--preview-reader-media") {
+            post["content"] = "## 媒体与代码\n\n这里是完整的文章阅读内容。\n\n!music \(music)\n\n!video bilibili:BV1xx411c7mD\n\n```swift\n" + (1...24).map { "let value\($0) = \"第 \($0) 行代码\"" }.joined(separator: "\n") + "\n```"
+        }
+        if ProcessInfo.processInfo.arguments.contains("--preview-reader-playlist") {
+            let random = ProcessInfo.processInfo.arguments.contains("--preview-playlist-random") ? ":random" : ""
+            post["content"] = "这里是文章内的歌单，左右滑动切换歌曲。\n\n!music qqvip:123456:playlist\(random)\n\n!video bilibili:BV1xx411c7mD"
+        }
+        var object: Any
+        if path.hasPrefix("/api/posts/"), path.hasSuffix("/short-link") {
+            object = ["code": "AbCd1234", "path": "/AbCd1234"]
+        } else if path == "/api/admin/v1/native-backups" {
             object = ["data": ["backups": [
                 ["id": "complete:data-20261023-demo.tar.gz.enc", "name": "data-20261023-demo.tar.gz.enc", "kind": "complete", "size": 48308224, "createdAt": "2026-10-23T08:30:00Z"],
                 ["id": "database:blog-20261023-demo.db", "name": "blog-20261023-demo.db", "kind": "database", "size": 524288, "createdAt": "2026-10-23T07:20:00Z"]
@@ -232,7 +246,15 @@ final class CreationPreviewURLProtocol: URLProtocol, @unchecked Sendable {
         else if path == "/api/admin/v1/references" { object = ["data": references, "meta": ["page": 1, "total": references.count, "totalPages": 1]] }
         else if path.hasPrefix("/api/admin/v1/references/") && path.hasSuffix("/reader") { object = ["data": ["id": 701, "title": "在快节奏的生活里，重新发现慢设计", "sourceName": "生活与设计", "author": "林间", "summary": "让设计回到人的日常，多留一点空白，照顾细小的感受。", "markdown": "## 把时间还给生活\n\n好的设计，不需要我们不停地追赶。它让日常的动作变得自然，让平凡的物件有了陪伴的温度。\n\n## 从细节开始\n\n- 给阅读留出空白\n- 让常用操作触手可及\n- 保留属于自己的节奏\n\n> 慢一点，往往能看得更清楚。", "capturedAt": date, "report": ["textCharacters": 3280, "cachedImages": 6]]] }
         else if path == "/api/admin/v1/dashboard" { object = ["data": ["posts": ["total": 20, "published": 18, "draft": 2], "comments": ["pending": 2], "moments": 32, "works": 2, "attachments": 4, "recentPosts": [], "recentComments": comments]] }
-        else if path == "/api/admin/v1/moments" && method == "GET" { object = ["data": moments, "meta": ["current_page": 1, "per_page": 20, "total_count": moments.count, "pages": 1]] }
+        else if path == "/api/admin/v1/moments" && method == "GET" {
+            if ProcessInfo.processInfo.arguments.contains("--preview-pagination") {
+                let page = Int(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value ?? "1") ?? 1
+                let entries: [[String: Any]] = (0..<12).map { index in
+                    ["id": page * 100 + index, "content": page == 1 ? "第一页记录 \(index + 1) · 日常的小事，值得慢慢记录。" : "自动续载成功 \(index + 1)", "images": [], "createdAt": date]
+                }
+                object = ["data": entries, "meta": ["current_page": page, "per_page": 12, "total_count": 24, "pages": 2]]
+            } else { object = ["data": moments, "meta": ["current_page": 1, "per_page": 20, "total_count": moments.count, "pages": 1]] }
+        }
         else if path.contains("/moments") && ["POST", "PATCH"].contains(method) {
             var value = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]) ?? [:]
             value["id"] = 301; value["createdAt"] = date; object = ["data": value]
@@ -266,7 +288,7 @@ final class CreationPreviewURLProtocol: URLProtocol, @unchecked Sendable {
             } else if query.first(where: { $0.name == "type" })?.value == "playlist" { object = ["tracks": [], "total": 12, "skipped": 12] }
             else {
                 let mid = query.first(where: { $0.name == "id" })?.value ?? ""
-                object = ["mid": mid, "name": mid == "002J4UUk29y8BY" ? "稻香" : "晴天", "artist": "周杰伦", "album": "叶惠美", "cover": "/cover.jpg"]
+                object = ["mid": mid, "name": mid == "002J4UUk29y8BY" ? "稻香" : "晴天", "artist": "周杰伦", "album": "叶惠美", "cover": "/cover.jpg", "lrc": "[00:00.00]这是用于验证同步的示例歌词\n[00:02.00]让日常慢下来\n[00:05.00]留一点时间听音乐\n[00:30.00]在半程也能同步定位"]
             }
         } else if path == "/api/admin/upload" { object = ["path": "/uploads/local-preview.jpg", "attachment": ["id": 801, "path": "/uploads/local-preview.jpg", "originalName": "照片.jpg", "mimeType": "image/jpeg", "size": 1000, "createdAt": date]] }
         else if path == "/api/admin/v1/attachments" {
@@ -285,6 +307,10 @@ final class CreationPreviewURLProtocol: URLProtocol, @unchecked Sendable {
         else if path == "/api/admin/telegram" { object = ["configured": false, "qqMusic": ["status": "ok", "label": "服务正常"]] }
         else if path.contains("session") { object = ["authenticated": true] }
         else { object = ["data": [], "meta": ["page": 1, "totalPages": 1]] }
+        if path.hasSuffix("/settings"), ProcessInfo.processInfo.arguments.contains("--preview-empty-about"),
+           var envelope = object as? [String: Any], var settings = envelope["data"] as? [String: Any] {
+            settings["about_content"] = ""; envelope["data"] = settings; object = envelope
+        }
         data = (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8)
         guard let url = request.url, let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"]) else { return }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)

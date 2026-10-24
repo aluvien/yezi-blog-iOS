@@ -68,7 +68,7 @@ struct AIImageComposerView: View {
                         Image(uiImage: image).resizable().scaledToFit().accessibilityLabel("AI 生成图片")
                     }
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("画面描述").font(.subheadline)
+                        Text("画面描述").font(CreationDesign.interface(.subheadline))
                         TextField("例如：山间晨雾，胶片摄影，柔和的日出光线", text: $model.prompt, axis: .vertical)
                             .lineLimit(4...8).focused($promptFocused).padding(14)
                             .background(CreationDesign.surface).overlay { RoundedRectangle(cornerRadius: 6).stroke(CreationDesign.border, lineWidth: 0.5) }
@@ -79,14 +79,14 @@ struct AIImageComposerView: View {
                         Text("横向 3:2").tag("1536x1024")
                         Text("竖向 2:3").tag("1024x1536")
                     }.pickerStyle(.menu).tint(CreationDesign.foreground).disabled(model.isGenerating)
-                    if allowsCover { Toggle("同时设为文章封面", isOn: $useAsCover).font(.subheadline) }
+                    if allowsCover { Toggle("同时设为文章封面", isOn: $useAsCover).font(CreationDesign.interface(.subheadline)) }
                 }.padding(20).disabled(isInserting)
             }.scrollDismissesKeyboard(.interactively)
                 .background(CreationDesign.canvas)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
                         if model.isGenerating {
-                            HStack { ProgressView(); Text("正在生成，请稍候…"); Spacer(); Button("取消生成") { model.cancel() } }.font(.subheadline).padding(20)
+                            HStack { ProgressView(); Text("正在生成，请稍候…"); Spacer(); Button("取消生成") { model.cancel() } }.font(CreationDesign.interface(.subheadline)).padding(20)
                         }
                         if let error = model.error { CreationNotice(text: error, isError: true).padding(.horizontal, 20).padding(.top, 12) }
                         actions
@@ -128,7 +128,7 @@ struct AIImageComposerView: View {
                 Text(isInserting ? "正在插入…" : "插入正文").frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
             }.buttonStyle(CreationPrimaryButtonStyle())
                 .disabled(model.image == nil || model.isGenerating || isInserting).accessibilityIdentifier("ai-image.insert")
-        }.font(.subheadline).padding(20).background(CreationDesign.canvas)
+        }.font(CreationDesign.interface(.subheadline)).padding(20).background(CreationDesign.canvas)
             .overlay(alignment: .top) { Rectangle().fill(CreationDesign.border).frame(height: 0.5) }
     }
 }
@@ -148,7 +148,7 @@ private struct AIImageSettingsView: View {
                     TextField("生图模型名称", text: $edited.model).accessibilityIdentifier("ai-image.model")
                     SecureField("API 密钥", text: $edited.apiKey).accessibilityIdentifier("ai-image.key")
                 }.textInputAutocapitalization(.never).autocorrectionDisabled()
-                Section { Text("地址支持填写服务根地址、以 /v1 结尾的地址，或完整的 /images/generations 地址。模型名称请与 CPA 中配置的一致。密钥只保存在此设备的系统钥匙串中。").font(.footnote) }
+                Section { Text("地址支持填写服务根地址、以 /v1 结尾的地址，或完整的 /images/generations 地址。模型名称请与 CPA 中配置的一致。密钥只保存在此设备的系统钥匙串中。").font(CreationDesign.interface(.footnote)) }
                 if let error { Section { Text(error).foregroundStyle(CreationDesign.danger) } }
                 }.listRowBackground(CreationDesign.surface)
             }.scrollContentBackground(.hidden).background(CreationDesign.canvas)

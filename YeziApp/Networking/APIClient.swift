@@ -316,6 +316,71 @@ final class ContentRepository: @unchecked Sendable {
 
 // MARK: - Native admin API
 
+/// Session-only snapshots for page re-entry. Never shares the public/disk cache.
+private actor AdminReadCache {
+    private struct Value { let group: String; let data: Data }
+    private struct Flight {
+        let id: UUID
+        let group: String
+        let task: Task<Data, Error>
+        var waiters: Set<UUID>
+    }
+    private var values: [URL: Value] = [:]
+    private var flights: [URL: Flight] = [:]
+
+    func data(for key: URL, group: String, reuseLoaded: Bool, load: @escaping @Sendable () async throws -> Data) async throws -> Data {
+        try Task.checkCancellation()
+        if reuseLoaded, let value = values[key] { return value.data }
+        if !reuseLoaded {
+            values.removeValue(forKey: key)
+            flights.removeValue(forKey: key)?.task.cancel()
+        }
+        let waiter = UUID()
+        if flights[key] == nil {
+            flights[key] = Flight(id: UUID(), group: group, task: Task { try await load() }, waiters: [])
+        }
+        flights[key]!.waiters.insert(waiter)
+        let flight = flights[key]!
+        do {
+            let data = try await withTaskCancellationHandler {
+                try await flight.task.value
+            } onCancel: {
+                Task { await self.release(key, flightID: flight.id, waiter: waiter) }
+            }
+            try Task.checkCancellation()
+            // A write or logout may have invalidated this read while it was running.
+            guard flights[key]?.id == flight.id else { throw CancellationError() }
+            // Bound memory even when many different searches are opened in one session.
+            if data.count <= 8 * 1024 * 1024 {
+                while !values.isEmpty && (values.count >= 64 || values.values.reduce(0, { $0 + $1.data.count }) + data.count > 8 * 1024 * 1024) {
+                    values.removeValue(forKey: values.keys.first!)
+                }
+                values[key] = Value(group: group, data: data)
+            }
+            release(key, flightID: flight.id, waiter: waiter)
+            return data
+        } catch {
+            release(key, flightID: flight.id, waiter: waiter)
+            throw error
+        }
+    }
+
+    private func release(_ key: URL, flightID: UUID, waiter: UUID) {
+        guard flights[key]?.id == flightID else { return }
+        flights[key]!.waiters.remove(waiter)
+        if flights[key]!.waiters.isEmpty {
+            flights.removeValue(forKey: key)?.task.cancel()
+        }
+    }
+
+    func invalidate(groups: Set<String>? = nil) {
+        values = values.filter { groups != nil && !groups!.contains($0.value.group) }
+        for (key, flight) in flights where groups == nil || groups!.contains(flight.group) {
+            flights.removeValue(forKey: key)?.task.cancel()
+        }
+    }
+}
+
 /// The private management API uses the same `admin_session` HttpOnly cookie as
 /// the web admin. Keeping this client separate from the public API client makes
 /// it impossible for admin requests to accidentally use the public cache.
@@ -329,9 +394,11 @@ final class AdminAPIClient: @unchecked Sendable {
     /// of leaving a stale, apparently empty admin page on screen.
     var unauthorizedHandler: (() -> Void)?
     @MainActor lazy var commentStore = AdminCommentStore(api: self)
+    @MainActor lazy var siteOverview = AdminSiteOverviewModel(api: self)
     private let session: URLSession
     private let decoder: JSONDecoder
     private let cookieStorage: HTTPCookieStorage
+    private let readCache = AdminReadCache()
 
     init(siteRoot: URL = AdminAPIClient.defaultSiteRoot, session: URLSession? = nil) {
         self.siteRoot = siteRoot
@@ -358,13 +425,21 @@ final class AdminAPIClient: @unchecked Sendable {
         adminCookie() != nil
     }
 
+    /// An explicit page refresh also expires previously viewed filters/details.
+    func discardLoadedData(for resources: Set<String>) async {
+        await readCache.invalidate(groups: resources)
+    }
+
     func login(password: String) async throws {
+        await readCache.invalidate()
         let body = try JSONEncoder().encode(AdminLoginRequest(password: password))
         _ = try await requestData(method: "POST", url: siteRoot.appendingPathComponent("api/admin/login"), body: body)
     }
 
     func logout() async {
+        await readCache.invalidate()
         await commentStore.clear()
+        await siteOverview.clearPrivateData()
         let url = siteRoot.appendingPathComponent("api/admin/logout")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -381,12 +456,15 @@ final class AdminAPIClient: @unchecked Sendable {
         return try requireData(envelope)
     }
 
-    func fetchDashboard() async throws -> AdminDashboard {
-        let envelope = try await get(path: "dashboard", as: AdminDashboard.self)
-        return try requireData(envelope)
+    func fetchDashboard(reuseLoaded: Bool = true) async throws -> AdminDashboard {
+        let envelope = try await get(path: "dashboard", reuseLoaded: reuseLoaded, as: AdminDashboard.self)
+        let value = try requireData(envelope)
+        try Task.checkCancellation()
+        await siteOverview.apply(dashboard: value)
+        return value
     }
 
-    func fetchPosts(page: Int = 1, limit: Int = 20, status: AdminPostFilter = .all, search: String = "") async throws -> AdminPage<AdminPostSummary> {
+    func fetchPosts(page: Int = 1, limit: Int = 20, status: AdminPostFilter = .all, search: String = "", reuseLoaded: Bool = true) async throws -> AdminPage<AdminPostSummary> {
         var query = [
             URLQueryItem(name: "page", value: String(page)),
             URLQueryItem(name: "limit", value: String(limit)),
@@ -395,12 +473,12 @@ final class AdminAPIClient: @unchecked Sendable {
         if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             query.append(URLQueryItem(name: "search", value: search))
         }
-        let envelope = try await get(path: "posts", queryItems: query, as: [AdminPostSummary].self)
+        let envelope = try await get(path: "posts", queryItems: query, reuseLoaded: reuseLoaded, as: [AdminPostSummary].self)
         return try makePage(envelope, page: page, limit: limit)
     }
 
-    func fetchPost(id: Int) async throws -> AdminPostDetail {
-        let envelope = try await get(path: "posts/\(id)", as: AdminPostDetail.self)
+    func fetchPost(id: Int, reuseLoaded: Bool = true) async throws -> AdminPostDetail {
+        let envelope = try await get(path: "posts/\(id)", reuseLoaded: reuseLoaded, as: AdminPostDetail.self)
         return try requireData(envelope)
     }
 
@@ -418,7 +496,7 @@ final class AdminAPIClient: @unchecked Sendable {
         _ = try await sendWithoutBody(method: "DELETE", path: "posts/\(id)")
     }
 
-    func fetchComments(page: Int = 1, limit: Int = 20, status: AdminCommentFilter = .all, momentID: Int? = nil) async throws -> AdminPage<AdminComment> {
+    func fetchComments(page: Int = 1, limit: Int = 20, status: AdminCommentFilter = .all, momentID: Int? = nil, reuseLoaded: Bool = true) async throws -> AdminPage<AdminComment> {
         var query = [
             URLQueryItem(name: "page", value: String(page)),
             URLQueryItem(name: "limit", value: String(limit)),
@@ -427,8 +505,21 @@ final class AdminAPIClient: @unchecked Sendable {
         if let momentID {
             query += [URLQueryItem(name: "target_type", value: "moment"), URLQueryItem(name: "target_id", value: String(momentID))]
         }
-        let envelope = try await get(path: "comments", queryItems: query, as: [AdminComment].self)
+        let envelope = try await get(path: "comments", queryItems: query, reuseLoaded: reuseLoaded, as: [AdminComment].self)
         return try makePage(envelope, page: page, limit: limit)
+    }
+
+    func fetchComment(id: Int) async throws -> AdminComment {
+        try requireData(await get(path: "comments/\(id)", as: AdminComment.self))
+    }
+    func registerPushDevice(_ value: YeziPushRegistration) async throws {
+        _ = try await send(method: "POST", path: "push-devices", body: value, as: YeziPushAck.self)
+    }
+    func unregisterPushDevice(_ installationID: String) async throws {
+        _ = try await send(method: "DELETE", path: "push-devices", body: YeziPushDeviceID(installation_id: installationID), as: YeziPushAck.self)
+    }
+    func testPushDevice(_ installationID: String) async throws {
+        _ = try await send(method: "POST", path: "push-devices/test", body: YeziPushDeviceID(installation_id: installationID), as: YeziPushAck.self)
     }
 
     func updateComment(id: Int, action: AdminCommentAction, reply: String? = nil) async throws -> AdminComment {
@@ -443,9 +534,9 @@ final class AdminAPIClient: @unchecked Sendable {
         await commentStore.didDelete(id)
     }
 
-    func fetchMoments(page: Int = 1, limit: Int = 20) async throws -> AdminPage<AdminMoment> {
+    func fetchMoments(page: Int = 1, limit: Int = 20, reuseLoaded: Bool = true) async throws -> AdminPage<AdminMoment> {
         let query = pageQuery(page: page, limit: limit)
-        let envelope = try await get(path: "moments", queryItems: query, as: [AdminMoment].self)
+        let envelope = try await get(path: "moments", queryItems: query, reuseLoaded: reuseLoaded, as: [AdminMoment].self)
         return try makePage(envelope, page: page, limit: limit)
     }
 
@@ -493,9 +584,9 @@ final class AdminAPIClient: @unchecked Sendable {
         _ = try await sendWithoutBody(method: "DELETE", path: "moments/\(id)")
     }
 
-    func fetchWorks(page: Int = 1, limit: Int = 20) async throws -> AdminPage<AdminWork> {
+    func fetchWorks(page: Int = 1, limit: Int = 20, reuseLoaded: Bool = false) async throws -> AdminPage<AdminWork> {
         let query = pageQuery(page: page, limit: limit)
-        let envelope = try await get(path: "works", queryItems: query, as: [AdminWork].self)
+        let envelope = try await get(path: "works", queryItems: query, reuseLoaded: reuseLoaded, as: [AdminWork].self)
         return try makePage(envelope, page: page, limit: limit)
     }
 
@@ -513,9 +604,9 @@ final class AdminAPIClient: @unchecked Sendable {
         _ = try await sendWithoutBody(method: "DELETE", path: "works/\(id)")
     }
 
-    func fetchCategories(page: Int = 1, limit: Int = 100) async throws -> AdminPage<AdminCategory> {
+    func fetchCategories(page: Int = 1, limit: Int = 100, reuseLoaded: Bool = false) async throws -> AdminPage<AdminCategory> {
         let query = pageQuery(page: page, limit: limit)
-        let envelope = try await get(path: "categories", queryItems: query, as: [AdminCategory].self)
+        let envelope = try await get(path: "categories", queryItems: query, reuseLoaded: reuseLoaded, as: [AdminCategory].self)
         return try makePage(envelope, page: page, limit: limit)
     }
 
@@ -533,9 +624,9 @@ final class AdminAPIClient: @unchecked Sendable {
         _ = try await sendWithoutBody(method: "DELETE", path: "categories/\(id)")
     }
 
-    func fetchTags(page: Int = 1, limit: Int = 100) async throws -> AdminPage<AdminTag> {
+    func fetchTags(page: Int = 1, limit: Int = 100, reuseLoaded: Bool = false) async throws -> AdminPage<AdminTag> {
         let query = pageQuery(page: page, limit: limit)
-        let envelope = try await get(path: "tags", queryItems: query, as: [AdminTag].self)
+        let envelope = try await get(path: "tags", queryItems: query, reuseLoaded: reuseLoaded, as: [AdminTag].self)
         return try makePage(envelope, page: page, limit: limit)
     }
 
@@ -559,12 +650,12 @@ final class AdminAPIClient: @unchecked Sendable {
         return try requireData(envelope)
     }
 
-    func fetchAttachments(page: Int = 1, limit: Int = 50, postID: Int? = nil) async throws -> AdminPage<AdminAttachment> {
+    func fetchAttachments(page: Int = 1, limit: Int = 50, postID: Int? = nil, reuseLoaded: Bool = true) async throws -> AdminPage<AdminAttachment> {
         var query = pageQuery(page: page, limit: limit)
         if let postID {
             query.append(URLQueryItem(name: "post_id", value: String(postID)))
         }
-        let envelope = try await get(path: "attachments", queryItems: query, as: [AdminAttachment].self)
+        let envelope = try await get(path: "attachments", queryItems: query, reuseLoaded: reuseLoaded, as: [AdminAttachment].self)
         return try makePage(envelope, page: page, limit: limit)
     }
 
@@ -639,14 +730,19 @@ final class AdminAPIClient: @unchecked Sendable {
         return try decodeDirect(response, as: AdminAttachmentCropResponse.self).attachment
     }
 
-    func fetchSettings() async throws -> [String: String] {
-        let envelope = try await get(path: "settings", as: AdminStringMap.self)
-        return try requireData(envelope).values
+    func fetchSettings(reuseLoaded: Bool = false) async throws -> [String: String] {
+        let envelope = try await get(path: "settings", reuseLoaded: reuseLoaded, as: AdminStringMap.self)
+        let values = try requireData(envelope).values
+        try Task.checkCancellation()
+        await siteOverview.apply(settings: values)
+        return values
     }
 
     func updateSettings(_ values: [String: String]) async throws -> [String: String] {
         let envelope = try await send(method: "PATCH", path: "settings", body: values, as: AdminStringMap.self)
-        return try requireData(envelope).values
+        let updated = try requireData(envelope).values
+        await siteOverview.apply(settings: updated)
+        return updated
     }
 
     func uploadFile(data: Data, filename: String, mimeType: String, postID: Int? = nil, original: Bool = false, progress: (@Sendable (Double) -> Void)? = nil) async throws -> AdminAttachment {
@@ -710,15 +806,48 @@ final class AdminAPIClient: @unchecked Sendable {
 
     /// Song details do not depend on resolving a playable audio URL.
     func fetchQQMusicMetadata(id: String) async throws -> AdminMusicTrack {
-        let response = try await requestData(
-            method: "GET",
-            url: makeSiteURL(path: "api/music/qq", queryItems: [
+        let url = makeSiteURL(path: "api/music/qq", queryItems: [
                 URLQueryItem(name: "id", value: id),
                 URLQueryItem(name: "type", value: "metadata"),
-            ]),
-            body: nil
-        )
+            ])
+        let response = try await readCache.data(for: url, group: "music-metadata", reuseLoaded: true) { [self] in
+            let data = try await requestData(method: "GET", url: url, body: nil)
+            _ = try decodeDirect(data, as: AdminMusicTrack.self)
+            return data
+        }
         return try decodeDirect(response, as: AdminMusicTrack.self)
+    }
+
+    func fetchLyrics(source: String, reuseLoaded: Bool = true) async throws -> String {
+        if source.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[") { return source }
+        guard let url = URL(string: source, relativeTo: siteRoot)?.absoluteURL,
+              url.scheme == siteRoot.scheme, url.host == siteRoot.host, url.port == siteRoot.port,
+              url.path.hasPrefix(siteRoot.path + (siteRoot.path.hasSuffix("/") ? "api/music/" : "/api/music/")) else {
+            throw APIError.transport("歌词地址不可用")
+        }
+        let data = try await readCache.data(for: url, group: "lyrics", reuseLoaded: reuseLoaded) { [self] in
+            let data = try await requestData(method: "GET", url: url, body: nil)
+            guard data.count <= 512 * 1024, String(data: data, encoding: .utf8) != nil else { throw APIError.transport("歌词格式不可用") }
+            return data
+        }
+        guard data.count <= 512 * 1024, let text = String(data: data, encoding: .utf8) else { throw APIError.transport("歌词格式不可用") }
+        return text
+    }
+
+    func articleShortLink(id: Int) async throws -> URL {
+        struct ShortLink: Decodable { let code: String; let path: String }
+        let url = makeSiteURL(path: "api/posts/\(id)/short-link")
+        let data = try await readCache.data(for: url, group: "posts", reuseLoaded: true) { [self] in
+            let data = try await requestData(method: "POST", url: url, body: nil)
+            let value = try decodeDirect(data, as: ShortLink.self)
+            guard value.code.range(of: "^[A-Za-z0-9]{8}$", options: .regularExpression) != nil,
+                  value.path == "/" + value.code else { throw APIError.transport("网站返回了无效短链接") }
+            return data
+        }
+        let value = try decodeDirect(data, as: ShortLink.self)
+        guard value.code.range(of: "^[A-Za-z0-9]{8}$", options: .regularExpression) != nil,
+              value.path == "/" + value.code else { throw APIError.transport("网站返回了无效短链接") }
+        return siteRoot.appendingPathComponent(value.code)
     }
 
     /// Resolves a playlist by its exact ID. The public endpoint returns the
@@ -739,10 +868,15 @@ final class AdminAPIClient: @unchecked Sendable {
     /// Browse metadata without resolving audio for every row. Older websites return
     /// only their first page; nextOffset stays nil and the UI reports partial data.
     func fetchQQMusicPlaylistMetadata(id: String, offset: Int = 0) async throws -> AdminMusicMetadataPage {
-        let response = try await requestData(method: "GET", url: makeSiteURL(path: "api/music/qq", queryItems: [
+        let url = makeSiteURL(path: "api/music/qq", queryItems: [
             URLQueryItem(name: "id", value: id), URLQueryItem(name: "type", value: "playlist-metadata"),
             URLQueryItem(name: "offset", value: String(offset)), URLQueryItem(name: "limit", value: "50")
-        ]), body: nil)
+        ])
+        let response = try await readCache.data(for: url, group: "music-metadata", reuseLoaded: true) { [self] in
+            let data = try await requestData(method: "GET", url: url, body: nil)
+            _ = try decodeDirect(data, as: AdminMusicMetadataPage.self)
+            return data
+        }
         return try decodeDirect(response, as: AdminMusicMetadataPage.self)
     }
 
@@ -796,12 +930,11 @@ final class AdminAPIClient: @unchecked Sendable {
         )
     }
 
-    func fetchQQMusicPlaylists() async throws -> AdminQQMusicPlaylistResponse {
-        let response = try await requestData(
-            method: "GET",
-            url: makeSiteURL(path: "api/admin/qq-music", queryItems: [URLQueryItem(name: "op", value: "playlists")]),
-            body: nil
-        )
+    func fetchQQMusicPlaylists(reuseLoaded: Bool = false) async throws -> AdminQQMusicPlaylistResponse {
+        let url = makeSiteURL(path: "api/admin/qq-music", queryItems: [URLQueryItem(name: "op", value: "playlists")])
+        let response = try await readCache.data(for: url, group: "music-playlists", reuseLoaded: reuseLoaded) { [self] in
+            try await requestData(method: "GET", url: url, body: nil)
+        }
         return try decodeDirect(response, as: AdminQQMusicPlaylistResponse.self)
     }
 
@@ -868,7 +1001,7 @@ final class AdminAPIClient: @unchecked Sendable {
         return try decodeArchiveResponse(response)
     }
 
-    func fetchReferenceLibrary(page: Int = 1, limit: Int = 50, query: String = "") async throws -> AdminPage<ReferenceLibraryItem> {
+    func fetchReferenceLibrary(page: Int = 1, limit: Int = 50, query: String = "", reuseLoaded: Bool = false) async throws -> AdminPage<ReferenceLibraryItem> {
         var queryItems = [
             URLQueryItem(name: "page", value: String(page)),
             URLQueryItem(name: "limit", value: String(limit)),
@@ -876,7 +1009,7 @@ final class AdminAPIClient: @unchecked Sendable {
         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             queryItems.append(URLQueryItem(name: "search", value: query))
         }
-        let envelope = try await get(path: "references", queryItems: queryItems, as: [ReferenceLibraryItem].self)
+        let envelope = try await get(path: "references", queryItems: queryItems, reuseLoaded: reuseLoaded, as: [ReferenceLibraryItem].self)
         return try makePage(envelope, page: page, limit: limit)
     }
 
@@ -984,9 +1117,39 @@ final class AdminAPIClient: @unchecked Sendable {
         return try decoder.decode(AdminTelegramCheckResult.self, from: response)
     }
 
-    private func get<Value: Decodable & Sendable>(path: String, queryItems: [URLQueryItem] = [], as type: Value.Type) async throws -> AdminEnvelope<Value> {
-        let data = try await requestData(method: "GET", url: makeURL(path: path, queryItems: queryItems), body: nil)
+    private func get<Value: Decodable & Sendable>(path: String, queryItems: [URLQueryItem] = [], reuseLoaded: Bool? = nil, as type: Value.Type) async throws -> AdminEnvelope<Value> {
+        let url = makeURL(path: path, queryItems: queryItems)
+        guard let reuseLoaded else {
+            return try decodeEnvelope(await requestData(method: "GET", url: url, body: nil), as: type)
+        }
+        let data = try await readCache.data(for: url, group: String(path.split(separator: "/")[0]), reuseLoaded: reuseLoaded) { [self] in
+            let data = try await requestData(method: "GET", url: url, body: nil)
+            // Failed/invalid responses must remain retryable, rather than becoming snapshots.
+            _ = try requireData(decodeEnvelope(data, as: type))
+            return data
+        }
         return try decodeEnvelope(data, as: type)
+    }
+
+    private func invalidateReads(afterWriting url: URL) async {
+        let parts = url.pathComponents
+        guard let admin = parts.lastIndex(of: "admin"), parts.count > admin + 1 else { return }
+        let tail = Array(parts.dropFirst(admin + 1).filter { $0 != "v1" })
+        guard let resource = tail.first else { return }
+        var groups: Set<String> = [resource]
+        switch resource {
+        case "posts", "moments", "works", "references": groups.formUnion(["dashboard", "attachments", "categories", "tags", "comments"])
+        case "categories", "tags": groups.formUnion(["posts", "moments", "dashboard"])
+        case "comments": groups.formUnion(["moments", "dashboard"])
+        case "attachments", "upload": groups.formUnion(["attachments", "dashboard"])
+        case "settings": groups.insert("attachments")
+        case "qq-music": groups.formUnion(["music-metadata", "music-playlists", "lyrics"])
+        case "native-backups" where tail.contains("restore"):
+            await readCache.invalidate(); return
+        default: break
+        }
+        await readCache.invalidate(groups: groups)
+        if groups.contains("dashboard") { await siteOverview.invalidateStatistics() }
     }
 
     private func send<Value: Decodable & Sendable, Body: Encodable & Sendable>(method: String, path: String, body: Body, as type: Value.Type) async throws -> AdminEnvelope<Value> {
@@ -1078,6 +1241,7 @@ final class AdminAPIClient: @unchecked Sendable {
             }
             guard let http = response as? HTTPURLResponse else { throw APIError.transport("服务器响应无效") }
             if http.statusCode == 401 {
+                await readCache.invalidate()
                 clearLocalSessionCookie()
                 unauthorizedHandler?()
             }
@@ -1088,6 +1252,7 @@ final class AdminAPIClient: @unchecked Sendable {
                 throw APIError.http(status: http.statusCode, message: decodeErrorMessage(data))
             }
             guard !data.isEmpty else { throw APIError.emptyData }
+            if !["GET", "HEAD", "OPTIONS"].contains(method) { await invalidateReads(afterWriting: url) }
             return data
         } catch {
             if isRequestCancellation(error) || Task.isCancelled { throw CancellationError() }
@@ -1653,6 +1818,7 @@ struct AdminMusicTrack: Decodable, Identifiable, Sendable {
     /// stream. QQ search itself normally only returns metadata, so the app
     /// never invents an audio URL when this value is absent.
     let playableURL: String?
+    let lyricSource: String?
     var id: String { mid }
 
     private enum CodingKeys: String, CodingKey {
@@ -1666,7 +1832,7 @@ struct AdminMusicTrack: Decodable, Identifiable, Sendable {
         case playableURL, playableUrl, playableSnake = "playable_url"
         case audioURL, audioUrl, audioSnake = "audio_url"
         case playURL, playUrl, playSnake = "play_url"
-        case url
+        case url, lrc, lyric
     }
 
     init(from decoder: Decoder) throws {
@@ -1688,6 +1854,7 @@ struct AdminMusicTrack: Decodable, Identifiable, Sendable {
             .playURL, .playUrl, .playSnake, .url,
         ]
         playableURL = Self.firstString(playableKeys, from: container)
+        lyricSource = Self.firstString([.lrc, .lyric], from: container)
     }
 
     private static func firstString(

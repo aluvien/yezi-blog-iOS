@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 import SafariServices
 import CryptoKit
 import Combine
+import AVKit
+import WebKit
 
 // MARK: - Admin site selection
 
@@ -111,6 +113,7 @@ final class AdminSessionModel: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.api.commentStore.clear()
+                self.api.siteOverview.clearPrivateData()
                 CreationAudioPlayer.stopAll()
                 self.isAuthenticated = false
                 self.errorMessage = "登录会话已过期，请重新登录"
@@ -131,7 +134,7 @@ final class AdminSessionModel: ObservableObject {
 
         if CreationPreview.isEnabled {
             await CreationPreview.seed()
-            isAuthenticated = true
+            isAuthenticated = CreationPreview.screen != "login"
             return
         }
 
@@ -153,6 +156,7 @@ final class AdminSessionModel: ObservableObject {
         guard !value.isEmpty, !isLoading else { return }
 
         if let siteRoot, siteRoot != api.siteRoot {
+            await YeziNotifications.shared.disconnect()
             CreationAudioPlayer.stopAll()
             let nextAPI = AdminAPIClient(siteRoot: siteRoot)
             bindUnauthorizedHandler(to: nextAPI)
@@ -176,6 +180,7 @@ final class AdminSessionModel: ObservableObject {
 
     func logout() async {
         CreationAudioPlayer.stopAll()
+        await YeziNotifications.shared.disconnect()
         await api.logout()
         isAuthenticated = false
         errorMessage = nil
@@ -192,6 +197,7 @@ final class AdminSessionModel: ObservableObject {
 
 struct RootContentView: View {
     @StateObject private var session = AdminSessionModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -203,11 +209,18 @@ struct RootContentView: View {
                 AdminLoginView(session: session)
             }
         }
+        .font(CreationDesign.interface())
 #if DEBUG
         .preferredColorScheme(CreationPreview.isEnabled && ProcessInfo.processInfo.arguments.contains("--preview-dark") ? .dark : nil)
 #endif
         .task {
             await session.bootstrap()
+        }
+        .task(id: session.isAuthenticated) {
+            await YeziNotifications.shared.attach(session.isAuthenticated ? session.api : nil)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active && session.isAuthenticated { Task { await YeziNotifications.shared.refreshAuthorization() } }
         }
     }
 }
@@ -219,7 +232,7 @@ private struct AdminLaunchView: View {
             VStack(spacing: 16) {
                 AdminLogo()
                 Text("Yezi 管理")
-                    .font(.title2.weight(.bold))
+                    .font(CreationDesign.interface(.title2).weight(.bold))
                 ProgressView()
                     .controlSize(.small)
             }
@@ -283,7 +296,7 @@ private struct AdminLoginView: View {
                     AdminLogo()
 
                     Text("Yezi 管理")
-                        .font(.largeTitle.weight(.bold))
+                        .font(CreationDesign.interface(.largeTitle).weight(.bold))
                         .padding(.top, 24)
 
                     Text("用原生 API 查看、编辑和管理你的博客内容。")
@@ -292,7 +305,7 @@ private struct AdminLoginView: View {
 
                     VStack(alignment: .leading, spacing: 10) {
                         Text("站点地址")
-                            .font(.subheadline.weight(.semibold))
+                            .font(CreationDesign.interface(.subheadline).weight(.semibold))
 
                         HStack(spacing: 10) {
                             Image(systemName: "globe")
@@ -323,20 +336,20 @@ private struct AdminLoginView: View {
                                     .autocorrectionDisabled()
 
                                 Button("添加并使用", action: addCustomSite)
-                                    .font(.subheadline.weight(.semibold))
+                                    .font(CreationDesign.interface(.subheadline).weight(.semibold))
                                     .buttonStyle(.bordered)
                                     .tint(AdminDesign.accent)
                                     .disabled(customSiteRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
                         } else if let root = resolvedSiteRoot {
                             Label(root.absoluteString, systemImage: "checkmark.circle.fill")
-                                .font(.caption)
+                                .font(CreationDesign.interface(.caption))
                                 .foregroundStyle(.secondary)
                         }
 
                         if let siteErrorMessage {
                             Text(siteErrorMessage)
-                                .font(.caption)
+                                .font(CreationDesign.interface(.caption))
                                 .foregroundStyle(.red)
                         }
                     }
@@ -350,7 +363,7 @@ private struct AdminLoginView: View {
 
                     VStack(alignment: .leading, spacing: 10) {
                         Text("管理员密码")
-                            .font(.subheadline.weight(.semibold))
+                            .font(CreationDesign.interface(.subheadline).weight(.semibold))
 
                         HStack(spacing: 10) {
                             Group {
@@ -383,7 +396,7 @@ private struct AdminLoginView: View {
 
                     if let errorMessage = session.errorMessage {
                         Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
+                            .font(CreationDesign.interface(.footnote))
                             .foregroundStyle(.red)
                             .padding(.top, 14)
                     }
@@ -402,7 +415,7 @@ private struct AdminLoginView: View {
                                 ProgressView().tint(.white)
                             }
                             Text(session.isLoading ? "正在登录…" : "进入管理后台")
-                                .font(.headline)
+                                .font(CreationDesign.interface(.headline))
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 15)
@@ -417,7 +430,7 @@ private struct AdminLoginView: View {
                     .padding(.top, 22)
 
                     Text("登录会话使用 admin_session Cookie 保存，不会保存管理员密码。")
-                        .font(.caption)
+                        .font(CreationDesign.interface(.caption))
                         .foregroundStyle(.secondary)
                         .padding(.top, 18)
                 }
@@ -433,16 +446,14 @@ private struct AdminLoginView: View {
 
 private struct AdminLogo: View {
     var body: some View {
-        Image(systemName: "square.and.pencil")
-            .font(.system(size: 28, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: 66, height: 66)
-            .background(AdminDesign.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        Image("BrandCat").resizable().scaledToFill()
+            .frame(width: 80, height: 80)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .accessibilityLabel("抱叶子的小猫")
     }
 }
 
 private enum AdminTab: Hashable {
-    case dashboard
     case posts
     case moments
     case comments
@@ -452,6 +463,10 @@ private enum AdminTab: Hashable {
 
 private struct AdminTabView: View {
     @ObservedObject var session: AdminSessionModel
+    @ObservedObject private var notifications = YeziNotifications.shared
+    @State private var notificationComment: AdminComment?
+    @State private var notificationMusic = false
+    @State private var notificationError: String?
     @State private var selection: AdminTab = AdminManagementRoute(previewScreen: CreationPreview.screen) != nil || CreationPreview.screen == "manage" ? .more : (["comments", "reply"].contains(CreationPreview.screen) ? .comments : (["article", "articles", "settings", "reader"].contains(CreationPreview.screen) ? .posts : .moments))
     @State private var showingDrafts = CreationPreview.screen == "drafts"
     @State private var showsBottomNav = true
@@ -459,17 +474,58 @@ private struct AdminTabView: View {
     var body: some View {
         TabView(selection: $selection) {
             NavigationStack { MomentFeedView(api: session.api) { showingDrafts = true } }.creationMiniPlayer(api: session.api)
-                .tabItem { Label("絮语", systemImage: "quote.bubble") }.tag(AdminTab.moments)
+                .tabItem { Label("絮语", systemImage: selection == .moments ? "text.bubble.fill" : "text.bubble") }.tag(AdminTab.moments)
             NavigationStack { CreationArticlesView(api: session.api) { showingDrafts = true } }.creationMiniPlayer(api: session.api)
-                .tabItem { Label("文章", systemImage: "doc.text") }.tag(AdminTab.posts)
+                .tabItem { Label("随笔", systemImage: "doc.text") }.tag(AdminTab.posts)
             NavigationStack { AdminCommentsView(session: session) }.creationMiniPlayer(api: session.api)
                 .tabItem { Label("评论", systemImage: "bubble.left") }.tag(AdminTab.comments)
             NavigationStack { AdminMoreView(session: session) }.creationMiniPlayer(api: session.api)
                 .tabItem { Label("管理", systemImage: "gearshape") }.tag(AdminTab.more)
         }.tint(CreationDesign.accent)
+            .environment(\.creationParentPresented, showingDrafts)
             .toolbar(showsBottomNav ? .visible : .hidden, for: .tabBar)
             .onPreferenceChange(AdminBottomNavVisibilityKey.self) { showsBottomNav = $0 }
             .sheet(isPresented: $showingDrafts) { LocalDraftsView(api: session.api, dismissible: true) }
+            .sheet(item: $notificationComment) { comment in
+                AdminReplySheet(comment: comment) { reply in
+                    _ = try await session.api.updateComment(id: comment.id, action: .reply, reply: reply)
+                }
+            }
+            .sheet(isPresented: $notificationMusic) {
+                NavigationStack { AdminSettingsView(session: session, section: .music)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { notificationMusic = false } } } }
+            }
+            .alert("通知", isPresented: Binding(get: { notificationError != nil }, set: { if !$0 { notificationError = nil } })) {
+                Button("好", role: .cancel) { notificationError = nil }
+            } message: { Text(notificationError ?? "") }
+            .task(id: notifications.route?.id) {
+                guard let route = notifications.route else { return }
+                defer { if notifications.route?.id == route.id { notifications.route = nil } }
+                guard route.matches(session.api.siteRoot) else {
+                    notificationError = "这条通知来自其他站点，请先切换到对应站点登录。"; return
+                }
+                switch route.kind {
+                case .comment:
+                    selection = .comments
+                    do {
+                        if let id = route.commentID { notificationComment = try await session.api.fetchComment(id: id) }
+                    } catch { notificationError = error.localizedDescription }
+                case .musicExpired: selection = .more; notificationMusic = true
+                case .test: selection = .more; notificationError = "测试通知已收到，通知连接正常。"
+                }
+            }
+#if DEBUG
+            .task {
+                guard CreationPreview.isEnabled else { return }
+                let arguments = ProcessInfo.processInfo.arguments
+                let kind: String
+                if arguments.contains("--preview-push-comment") { kind = "comment" }
+                else if arguments.contains("--preview-push-music") { kind = "music_expired" }
+                else { return }
+                if let route = YeziPushRoute(userInfo: ["yezi": ["version": 1, "event_id": UUID().uuidString,
+                    "kind": kind, "site_root": session.api.siteRoot.absoluteString, "comment_id": 1]]) { notifications.receive(route) }
+            }
+#endif
     }
 }
 
@@ -483,397 +539,6 @@ private struct AdminInAppBrowserView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
-}
-
-// MARK: - Dashboard
-
-@MainActor
-private final class AdminDashboardModel: ObservableObject {
-    let api: AdminAPIClient
-    @Published var dashboard: AdminDashboard?
-    @Published var totalComments = 0
-    @Published var recentItems: [AdminRecentPublishItem] = []
-    @Published var lastLoadedAt: Date?
-    @Published var isLoading = false
-    @Published var errorMessage: String?
-
-    init(api: AdminAPIClient) {
-        self.api = api
-    }
-
-    func load() async {
-        guard !isLoading else { return }
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-
-        do {
-            async let dashboardTask = api.fetchDashboard()
-            async let momentsTask = api.fetchMoments(limit: 5)
-            async let commentsTask = api.fetchComments(limit: 1, status: .all)
-
-            let loadedDashboard = try await dashboardTask
-            dashboard = loadedDashboard
-            let recentMoments = (try? await momentsTask)?.items ?? []
-            totalComments = (try? await commentsTask)?.meta.total ?? 0
-            recentItems = (loadedDashboard.recentPosts.map(AdminRecentPublishItem.post) + recentMoments.map(AdminRecentPublishItem.moment))
-                .sorted { $0.sortDate > $1.sortDate }
-            lastLoadedAt = Date()
-        } catch {
-            if !isAdminRequestCancellation(error) { errorMessage = error.localizedDescription }
-        }
-    }
-}
-
-private enum AdminRecentPublishItem: Identifiable {
-    case post(AdminPostSummary)
-    case moment(AdminMoment)
-
-    var id: String {
-        switch self {
-        case .post(let post): return "post-\(post.id)"
-        case .moment(let moment): return "moment-\(moment.id)"
-        }
-    }
-
-    var sortDate: Date {
-        switch self {
-        case .post(let post): return AdminFormatters.date(from: post.updatedAt ?? post.createdAt) ?? .distantPast
-        case .moment(let moment): return AdminFormatters.date(from: moment.updatedAt ?? moment.createdAt) ?? .distantPast
-        }
-    }
-}
-
-private func editingRoute(for moment: AdminMoment, api: AdminAPIClient) async throws -> CreationEditorRoute {
-    let site = CreationDraftStore.canonicalSite(api.siteRoot)
-    if let saved = try await CreationDraftStore.shared.list(site: site).first(where: { $0.kind == .moment && $0.serverID == moment.id }) {
-        return CreationEditorRoute(draft: saved)
-    }
-    var draft = CreationDraft(site: site, kind: .moment, serverID: moment.id)
-    let split = CreationMusic.split(moment.content)
-    draft.text = split.text
-    draft.music = split.music
-    draft.media = moment.images.map { CreationMedia(remotePath: $0, state: .uploaded) }
-    return CreationEditorRoute(draft: draft)
-}
-
-private struct AdminDashboardView: View {
-    @ObservedObject var session: AdminSessionModel
-    @StateObject private var model: AdminDashboardModel
-    @State private var showingSiteBrowser = false
-    @State private var showingDrafts = false
-    @State private var readingPost: AdminPostSummary?
-    @State private var momentRoute: CreationEditorRoute?
-
-    init(session: AdminSessionModel) {
-        self.session = session
-        _model = StateObject(wrappedValue: AdminDashboardModel(api: session.api))
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                AdminPreviewHeader(overline: "YEZI ADMIN", title: "概览", subtitle: "管理你的站点内容") {
-                    Text("叶")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AdminDesign.accent)
-                        .frame(width: 38, height: 38)
-                        .background(AdminDesign.surface, in: Circle())
-                        .overlay(Circle().stroke(AdminDesign.border, lineWidth: 1))
-                }
-
-                if let errorMessage = model.errorMessage {
-                    AdminErrorBanner(message: errorMessage)
-                        .padding(.top, 8)
-                }
-
-                if let dashboard = model.dashboard {
-                    dashboardContent(dashboard)
-                } else if model.isLoading {
-                    ProgressView("正在加载概览…")
-                        .frame(maxWidth: .infinity, minHeight: 280)
-                } else {
-                    AdminEmptyState(title: "暂时没有数据", message: "下拉或点击刷新重新获取。", systemImage: "chart.bar.xaxis")
-                }
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 10)
-            .padding(.bottom, 18)
-        }
-        .background(AdminDesign.background)
-        .adminNativeSwipeBack()
-        .refreshable { await model.load() }
-        .task { await model.load() }
-        .sheet(isPresented: $showingSiteBrowser) {
-            AdminInAppBrowserView(url: session.api.siteRoot)
-                .ignoresSafeArea(edges: .bottom)
-        }
-        .sheet(isPresented: $showingDrafts) { LocalDraftsView(api: session.api, dismissible: true) }
-        .sheet(item: $readingPost) { CreationArticleReader(post: $0, api: session.api) }
-        .fullScreenCover(item: $momentRoute, onDismiss: { Task { await model.load() } }) { route in
-            CreationComposerView(api: session.api, draft: route.draft)
-        }
-    }
-
-    @ViewBuilder
-    private func dashboardContent(_ dashboard: AdminDashboard) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(AdminDesign.accent)
-                .frame(width: 7, height: 7)
-            Text("最近同步 · \(AdminFormatters.displayDate(model.lastLoadedAt))")
-                .font(.caption)
-        }
-        .foregroundStyle(AdminDesign.accent)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AdminDesign.accentSoft, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .padding(.top, 2)
-
-        Button {
-            showingSiteBrowser = true
-        } label: {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("今天的站点")
-                        .font(.system(size: 18, weight: .semibold))
-                    Text("内容、评论和草稿都在这里。")
-                        .font(.subheadline)
-                        .foregroundStyle(AdminDesign.muted)
-                }
-                Spacer()
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 28, weight: .medium))
-                    .foregroundStyle(AdminDesign.accent)
-            }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.plain)
-        .background(
-            LinearGradient(
-                colors: [AdminDesign.accentSoft, AdminDesign.surface],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-        )
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AdminDesign.border, lineWidth: 1))
-        .padding(.top, 14)
-
-        HStack(spacing: 8) {
-            let pendingComments = dashboard.comments?.pending ?? 0
-            AdminPreviewMetric(
-                value: "\(pendingComments > 0 ? pendingComments : model.totalComments)",
-                label: pendingComments > 0 ? "待处理评论" : "全部评论",
-                destination: AdminCommentsView(session: session, initialFilter: pendingComments > 0 ? .pending : .all)
-            )
-            let draftCount = dashboard.posts?.draft ?? 0
-            AdminPreviewMetric(
-                value: "\(draftCount > 0 ? draftCount : (dashboard.posts?.published ?? 0))",
-                label: draftCount > 0 ? "篇草稿" : "已发布文章",
-                destination: CreationArticlesView(api: session.api, initialFilter: draftCount > 0 ? .draft : .published) { showingDrafts = true }
-            )
-            AdminPreviewMetric(
-                value: "\(dashboard.moments ?? 0)",
-                label: "条絮语",
-                destination: MomentFeedView(api: session.api) { showingDrafts = true }
-            )
-        }
-        .padding(.top, 10)
-
-        AdminSectionTitle(title: "最近发布", actionTitle: "查看全部", destination: AdminRecentPublishView(session: session))
-            .padding(.top, 7)
-        if model.recentItems.isEmpty {
-            AdminEmptyState(title: "还没有发布内容", message: "创建你的第一篇文章或记录一个想法。", systemImage: "doc.badge.plus")
-        } else {
-            VStack(spacing: 0) {
-                ForEach(model.recentItems) { item in
-                    switch item {
-                    case .post(let post):
-                        Button { readingPost = post } label: {
-                            AdminPostRow(post: post, siteRoot: session.api.siteRoot, showsChevron: false)
-                        }
-                        .buttonStyle(.plain)
-                    case .moment(let moment):
-                        Button {
-                            Task {
-                                do { momentRoute = try await editingRoute(for: moment, api: session.api) }
-                                catch { model.errorMessage = error.localizedDescription }
-                            }
-                        } label: {
-                            AdminRecentMomentRow(moment: moment)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if item.id != model.recentItems.last?.id {
-                        Divider().padding(.leading, 14)
-                    }
-                }
-            }
-            .padding(.horizontal, 2)
-            .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AdminDesign.border, lineWidth: 1))
-        }
-
-    }
-}
-
-private struct AdminRecentPublishView: View {
-    @ObservedObject var session: AdminSessionModel
-    @StateObject private var model: AdminDashboardModel
-    @State private var readingPost: AdminPostSummary?
-    @State private var momentRoute: CreationEditorRoute?
-
-    init(session: AdminSessionModel) {
-        self.session = session
-        _model = StateObject(wrappedValue: AdminDashboardModel(api: session.api))
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                AdminPreviewHeader(overline: "TIMELINE", title: "最近发布", subtitle: "文章和想法的时间线") {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(AdminDesign.accent)
-                        .frame(width: 38, height: 38)
-                        .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(AdminDesign.border, lineWidth: 1))
-                }
-
-                if let errorMessage = model.errorMessage {
-                    AdminErrorBanner(message: errorMessage)
-                        .padding(.bottom, 12)
-                }
-
-                if model.recentItems.isEmpty && !model.isLoading {
-                    AdminEmptyState(title: "还没有发布内容", message: "创建文章或记录一个想法后会出现在这里。", systemImage: "clock")
-                        .frame(maxWidth: .infinity)
-                        .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AdminDesign.border, lineWidth: 1))
-                } else if model.recentItems.isEmpty {
-                    ProgressView("正在加载时间线…")
-                        .frame(maxWidth: .infinity, minHeight: 220)
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(model.recentItems) { item in
-                            switch item {
-                            case .post(let post):
-                                Button { readingPost = post } label: {
-                                    AdminPostRow(post: post, siteRoot: session.api.siteRoot, showsChevron: true)
-                                }
-                                .buttonStyle(.plain)
-                            case .moment(let moment):
-                                Button {
-                                    Task {
-                                        do { momentRoute = try await editingRoute(for: moment, api: session.api) }
-                                        catch { model.errorMessage = error.localizedDescription }
-                                    }
-                                } label: {
-                                    AdminRecentMomentRow(moment: moment)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            if item.id != model.recentItems.last?.id {
-                                Divider().padding(.leading, 14)
-                            }
-                        }
-                    }
-                    .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AdminDesign.border, lineWidth: 1))
-                }
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 10)
-            .padding(.bottom, 24)
-        }
-        .background(AdminDesign.background)
-        .adminNativeSwipeBack()
-        .refreshable { await model.load() }
-        .task { await model.load() }
-        .sheet(item: $readingPost) { CreationArticleReader(post: $0, api: session.api) }
-        .fullScreenCover(item: $momentRoute, onDismiss: { Task { await model.load() } }) { route in
-            CreationComposerView(api: session.api, draft: route.draft)
-        }
-    }
-}
-
-private struct AdminPreviewMetric<Destination: View>: View {
-    let value: String
-    let label: String
-    let destination: Destination
-
-    init(value: String, label: String, destination: Destination) {
-        self.value = value
-        self.label = label
-        self.destination = destination
-    }
-
-    var body: some View {
-        NavigationLink {
-            destination.adminNativeSwipeBack()
-        } label: {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(value)
-                    .font(.system(size: 23, weight: .medium, design: .rounded))
-                    .foregroundStyle(AdminDesign.foreground)
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(AdminDesign.muted)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(13)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .buttonStyle(.plain)
-        .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(AdminDesign.border, lineWidth: 1))
-    }
-}
-
-private struct AdminRecentMomentRow: View {
-    let moment: AdminMoment
-
-    private var summary: String {
-        let split = CreationMusic.split(moment.content)
-        let text = split.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        if !text.isEmpty { return text }
-        if let music = split.music.first {
-            return music.title == music.artist ? music.title : "\(music.title) · \(music.artist)"
-        }
-        return moment.images.isEmpty ? "一条絮语" : "\(moment.images.count) 张照片"
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "quote.bubble")
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(AdminDesign.accent)
-                .frame(width: 38, height: 38)
-                .background(AdminDesign.accentSoft, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(summary)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(AdminDesign.foreground)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text("絮语 · \(AdminFormatters.displayDate(moment.updatedAt ?? moment.createdAt)) · \(moment.images.count) 张图片")
-                    .font(.caption)
-                    .foregroundStyle(AdminDesign.muted)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(AdminDesign.muted)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-    }
 }
 
 // MARK: - Posts
@@ -989,7 +654,7 @@ private struct AdminPostsView: View {
                         }
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(CreationDesign.interface(size: 16, weight: .semibold))
                             .foregroundStyle(AdminDesign.accent)
                             .frame(width: 38, height: 38)
                             .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -1108,18 +773,18 @@ private struct AdminPostRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: iconName)
-                .font(.system(size: 17, weight: .medium))
+                .font(CreationDesign.interface(size: 17, weight: .medium))
                 .foregroundStyle(AdminDesign.accent)
                 .frame(width: 38, height: 38)
                 .background(AdminDesign.accentSoft, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(post.title)
-                    .font(.body.weight(.medium))
+                    .font(CreationDesign.interface(.body).weight(.medium))
                     .foregroundStyle(AdminDesign.foreground)
                     .lineLimit(1)
                 Text(metaText)
-                    .font(.system(size: 11))
+                    .font(CreationDesign.time(.caption2))
                     .foregroundStyle(AdminDesign.muted)
                     .lineLimit(1)
             }
@@ -1129,7 +794,7 @@ private struct AdminPostRow: View {
 
             if showsChevron {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(CreationDesign.interface(size: 13, weight: .medium))
                     .foregroundStyle(AdminDesign.muted)
             }
         }
@@ -1215,11 +880,11 @@ private struct AdminEditorField: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(label)
-                .font(.system(size: 11))
+                .font(CreationDesign.interface(size: 11))
                 .foregroundStyle(AdminDesign.muted)
                 .frame(width: 54, alignment: .leading)
             TextField(placeholder.isEmpty ? label : placeholder, text: $text)
-                .font(.system(size: 12))
+                .font(CreationDesign.interface(size: 12))
                 .foregroundStyle(AdminDesign.foreground)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -1239,11 +904,11 @@ private struct AdminTaxonomyField: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(label)
-                .font(.system(size: 11))
+                .font(CreationDesign.interface(size: 11))
                 .foregroundStyle(AdminDesign.muted)
                 .frame(width: 54, alignment: .leading)
             Text(value.isEmpty ? "未选择" : value)
-                .font(.system(size: 12))
+                .font(CreationDesign.interface(size: 12))
                 .foregroundStyle(value.isEmpty ? AdminDesign.muted : AdminDesign.foreground)
                 .lineLimit(1)
             Spacer()
@@ -1258,7 +923,7 @@ private struct AdminTaxonomyField: View {
                 }
             } label: {
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(CreationDesign.interface(size: 11, weight: .medium))
                     .foregroundStyle(AdminDesign.accent)
             }
         }
@@ -1280,11 +945,11 @@ private struct AdminTagsField: View {
     var body: some View {
         HStack(spacing: 10) {
             Text("标签")
-                .font(.system(size: 11))
+                .font(CreationDesign.interface(size: 11))
                 .foregroundStyle(AdminDesign.muted)
                 .frame(width: 54, alignment: .leading)
             Text(selected.isEmpty ? "选择标签" : selected.joined(separator: ", "))
-                .font(.system(size: 12))
+                .font(CreationDesign.interface(size: 12))
                 .foregroundStyle(selected.isEmpty ? AdminDesign.muted : AdminDesign.foreground)
                 .lineLimit(2)
             Spacer()
@@ -1305,7 +970,7 @@ private struct AdminTagsField: View {
                 }
             } label: {
                 Image(systemName: "tag")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(CreationDesign.interface(size: 11, weight: .medium))
                     .foregroundStyle(AdminDesign.accent)
             }
         }
@@ -1331,6 +996,7 @@ final class AdminCommentsModel: ObservableObject {
     private var commentChanges: AnyCancellable?
     private var selectedFilter: AdminCommentFilter = .all
     private var paginationInvalidated = false
+    private var loadedFilter: AdminCommentFilter?
 
     init(api: AdminAPIClient) {
         self.api = api
@@ -1354,7 +1020,14 @@ final class AdminCommentsModel: ObservableObject {
         }
     }
 
-    func load(filter: AdminCommentFilter) async {
+    func loadIfNeeded(filter: AdminCommentFilter) async {
+        if selectedFilter == filter && isLoading { return }
+        if loadedFilter == filter && !paginationInvalidated { return }
+        await load(filter: filter, reuseLoaded: true)
+    }
+
+    func load(filter: AdminCommentFilter, reuseLoaded: Bool = false) async {
+        guard !Task.isCancelled else { return }
         selectedFilter = filter
         let commentRevision = api.commentStore.revision
         requestSerial += 1
@@ -1367,12 +1040,14 @@ final class AdminCommentsModel: ObservableObject {
             }
         }
         do {
-            async let allTask = api.fetchComments(page: 1, limit: 1, status: .all)
-            async let pendingTask = api.fetchComments(page: 1, limit: 1, status: .pending)
-            async let approvedTask = api.fetchComments(page: 1, limit: 1, status: .approved)
-            async let selectedTask = api.fetchComments(page: 1, limit: 20, status: filter)
+            if !reuseLoaded { await api.discardLoadedData(for: ["comments"]) }
+            guard requestID == requestSerial, !Task.isCancelled else { return }
+            async let allTask = api.fetchComments(page: 1, limit: 1, status: .all, reuseLoaded: reuseLoaded)
+            async let pendingTask = api.fetchComments(page: 1, limit: 1, status: .pending, reuseLoaded: reuseLoaded)
+            async let approvedTask = api.fetchComments(page: 1, limit: 1, status: .approved, reuseLoaded: reuseLoaded)
+            async let selectedTask = api.fetchComments(page: 1, limit: 20, status: filter, reuseLoaded: reuseLoaded)
             let results = try await (allTask, pendingTask, approvedTask, selectedTask)
-            guard requestID == requestSerial else { return }
+            guard requestID == requestSerial, !Task.isCancelled else { return }
             counts = [
                 .all: results.0.meta.total ?? results.0.items.count,
                 .pending: results.1.meta.total ?? results.1.items.count,
@@ -1383,6 +1058,7 @@ final class AdminCommentsModel: ObservableObject {
             meta = results.3.meta
             total = results.3.meta.total ?? results.3.items.count
             paginationInvalidated = false
+            loadedFilter = filter
         } catch {
             guard requestID == requestSerial else { return }
             if !isAdminRequestCancellation(error) { errorMessage = error.localizedDescription }
@@ -1409,7 +1085,7 @@ final class AdminCommentsModel: ObservableObject {
         let commentRevision = api.commentStore.revision
         defer { isLoadingMore = false }
         do {
-            let next = try await api.fetchComments(page: currentPage + 1, limit: limit, status: filter)
+            let next = try await api.fetchComments(page: currentPage + 1, limit: limit, status: filter, reuseLoaded: true)
             guard requestID == requestSerial else { return }
             api.commentStore.ingest(next.items, since: commentRevision)
             let existing = Set(items.map(\.id))
@@ -1475,15 +1151,12 @@ private struct AdminCommentsView: View {
             LazyVStack(alignment: .leading, spacing: 20) {
                 CreationPageHeader(title: "评论", subtitle: "\(model.total) 条\(filter.title)评论") {
                     Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.title2).foregroundStyle(CreationDesign.accent)
+                        .font(CreationDesign.interface(.title2)).foregroundStyle(CreationDesign.accent)
                         .frame(width: 48, height: 48).background(CreationDesign.surface, in: Circle())
                 }
 
-                Picker("评论状态", selection: $filter) {
-                    ForEach(AdminCommentFilter.allCases) { item in
-                        Text(commentFilterTitle(item)).tag(item)
-                    }
-                }.pickerStyle(.segmented)
+                CreationSegmentedPicker(selection: $filter, values: AdminCommentFilter.allCases, titles: AdminCommentFilter.allCases.map(commentFilterTitle))
+                    .accessibilityLabel("评论状态")
 
                 Rectangle().fill(CreationDesign.border).frame(height: 0.5)
 
@@ -1530,11 +1203,12 @@ private struct AdminCommentsView: View {
         .background(AdminDesign.background)
         .toolbar(.hidden, for: .navigationBar)
         .onChange(of: filter) { _, _ in
-            Task { await model.load(filter: filter) }
+            Task { await model.loadIfNeeded(filter: filter) }
         }
+        .modifier(CreationContentTabSwipe(selection: $filter, values: AdminCommentFilter.allCases))
         .refreshable { await model.load(filter: filter) }
         .task {
-            await model.load(filter: filter)
+            await model.loadIfNeeded(filter: filter)
             if CreationPreview.isEnabled && CreationPreview.screen == "reply" { replyTarget = model.items.first }
         }
         .sheet(item: $replyTarget) { comment in
@@ -1602,20 +1276,20 @@ private struct AdminCommentRow: View {
             HStack(spacing: 12) {
                 AdminCommentAvatar(comment: comment, siteRoot: siteRoot)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(comment.nickname).font(.headline).foregroundStyle(AdminDesign.foreground)
-                    Text(AdminFormatters.displayDate(comment.createdAt)).font(.caption).foregroundStyle(AdminDesign.muted)
+                    Text(comment.nickname).font(CreationDesign.interface(.headline)).foregroundStyle(AdminDesign.foreground)
+                    Text(AdminFormatters.displayDate(comment.createdAt)).font(CreationDesign.time()).foregroundStyle(AdminDesign.muted)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 AdminStatusBadge(status: comment.status)
             }
             if let target = comment.displayTargetLabel {
                 Label(target, systemImage: comment.targetType == "moment" ? "quote.bubble" : "doc.text")
-                    .font(.caption).foregroundStyle(AdminDesign.muted).lineLimit(2)
+                    .font(CreationDesign.interface(.caption)).foregroundStyle(AdminDesign.muted).lineLimit(2)
             }
-            Text(comment.content).font(.body).foregroundStyle(AdminDesign.foreground).textSelection(.enabled)
+            Text(comment.content).font(CreationDesign.copy()).foregroundStyle(AdminDesign.foreground).textSelection(.enabled)
             if let reply = comment.adminReply?.trimmedNonEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("我的回复", systemImage: "arrow.turn.down.right").font(.caption.weight(.semibold))
-                    Text(reply).font(.subheadline).foregroundStyle(AdminDesign.foreground)
+                    Label("我的回复", systemImage: "arrow.turn.down.right").font(CreationDesign.interface(.caption).weight(.semibold))
+                    Text(reply).font(CreationDesign.copy(15, relativeTo: .subheadline)).foregroundStyle(AdminDesign.foreground)
                 }.foregroundStyle(AdminDesign.accent).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 14).padding(.vertical, 6).overlay(alignment: .leading) { Rectangle().fill(AdminDesign.border).frame(width: 1) }
             }
@@ -1798,7 +1472,7 @@ private struct AdminCommentActionChip: View {
 
     var body: some View {
         Button(title, action: action)
-            .font(.system(size: 10, weight: .medium))
+            .font(CreationDesign.interface(size: 10, weight: .medium))
             .foregroundStyle(isDanger ? AdminDesign.danger : AdminDesign.accent)
             .padding(.horizontal, 9)
             .padding(.vertical, 6)
@@ -1824,11 +1498,11 @@ private struct AdminReplySheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    AdminSettingsCard(title: comment.nickname, subtitle: "访客评论 · \(AdminFormatters.displayDate(comment.createdAt))") {
-                        Text(comment.content).font(.body).foregroundStyle(CreationDesign.foreground).textSelection(.enabled)
+                    AdminSettingsCard(title: comment.nickname, subtitle: "访客评论 · \(AdminFormatters.displayDate(comment.createdAt))", subtitleFont: CreationDesign.time()) {
+                        Text(comment.content).font(CreationDesign.copy()).foregroundStyle(CreationDesign.foreground).textSelection(.enabled)
                     }
                     AdminSettingsCard(title: "我的回复", subtitle: "保存后会显示在这条评论下方") {
-                        AdminSettingsMultilineField(text: $reply, placeholder: "写下给读者的回复…", minHeight: 180)
+                        AdminSettingsMultilineField(text: $reply, placeholder: "写下给读者的回复…", minHeight: 180, font: CreationDesign.copy())
                     }
                     if let errorMessage { CreationNotice(text: errorMessage, isError: true) }
                 }.padding(20).disabled(isSaving)
@@ -1914,13 +1588,15 @@ private final class AdminSettingsModel: ObservableObject {
         self.api = api
     }
 
-    func load() async {
+    func load(reuseLoaded: Bool = false) async {
         guard !isLoading else { return }
+        if hasChanges { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
-            values = try await api.fetchSettings()
+            if !reuseLoaded { await api.discardLoadedData(for: ["settings"]) }
+            values = try await api.fetchSettings(reuseLoaded: reuseLoaded)
             applyDefaults()
             savedValues = values
             hasLoaded = true
@@ -1936,7 +1612,8 @@ private final class AdminSettingsModel: ObservableObject {
         successMessage = nil
         defer { isSaving = false }
         do {
-            values = try await api.updateSettings(values)
+            let retired: Set<String> = ["layout_theme", "show_related_posts", "show_more_posts", "show_table_of_contents", "show_home_page", "show_moments_page", "show_posts_page", "show_references_page", "show_works_page", "show_about_page"]
+            values = try await api.updateSettings(values.filter { !retired.contains($0.key) })
             applyDefaults()
             savedValues = values
             hasLoaded = true
@@ -2163,7 +1840,7 @@ private struct AdminSettingsView: View {
                 }
                 if let successMessage = model.successMessage {
                     Label(successMessage, systemImage: "checkmark.circle.fill")
-                        .font(.subheadline.weight(.medium))
+                        .font(CreationDesign.interface(.subheadline).weight(.medium))
                         .foregroundStyle(AdminDesign.accent)
                         .padding(.bottom, 12)
                 }
@@ -2259,14 +1936,14 @@ private struct AdminSettingsView: View {
                     AdminImageView(rawURL: model.value("site_logo"), siteRoot: session.api.siteRoot, size: CGSize(width: 56, height: 56), cornerRadius: 14)
                     VStack(alignment: .leading, spacing: 5) {
                         Text("站点 Logo")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(CreationDesign.interface(size: 12, weight: .semibold))
                         Text(model.value("site_logo").isEmpty ? "尚未设置" : model.value("site_logo"))
-                            .font(.system(size: 10))
+                            .font(CreationDesign.interface(size: 10))
                             .foregroundStyle(AdminDesign.muted)
                             .lineLimit(1)
                         PhotosPicker(selection: $selectedLogoItem, matching: .images) {
                             Text("上传 Logo")
-                                .font(.subheadline.weight(.medium))
+                                .font(CreationDesign.interface(.subheadline).weight(.medium))
                                 .foregroundStyle(AdminDesign.accent)
                         }
                     }
@@ -2279,14 +1956,14 @@ private struct AdminSettingsView: View {
                     AdminImageView(rawURL: model.value("author_avatar"), siteRoot: session.api.siteRoot, size: CGSize(width: 56, height: 56), cornerRadius: 28)
                     VStack(alignment: .leading, spacing: 5) {
                         Text("作者头像")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(CreationDesign.interface(size: 12, weight: .semibold))
                         Text(model.value("author_avatar").isEmpty ? "尚未设置" : model.value("author_avatar"))
-                            .font(.system(size: 10))
+                            .font(CreationDesign.interface(size: 10))
                             .foregroundStyle(AdminDesign.muted)
                             .lineLimit(1)
                         PhotosPicker(selection: $selectedAvatarItem, matching: .images) {
                             Text("上传头像")
-                                .font(.subheadline.weight(.medium))
+                                .font(CreationDesign.interface(.subheadline).weight(.medium))
                                 .foregroundStyle(AdminDesign.accent)
                         }
                     }
@@ -2309,16 +1986,16 @@ private struct AdminSettingsView: View {
                     AdminSettingsField(label: "检查间隔", placeholder: "6", text: textBinding("qq_music_health_check_interval_hours"))
                         .keyboardType(.numberPad)
                     Text("小时/次")
-                        .font(.subheadline)
+                        .font(CreationDesign.interface(.subheadline))
                         .foregroundStyle(AdminDesign.muted)
                         .fixedSize()
                 }
                 Label("健康检查配置直接与网站后台同步。", systemImage: "checkmark.circle")
-                    .font(.caption)
+                    .font(CreationDesign.interface(.caption))
                     .foregroundStyle(AdminDesign.muted)
                 AdminSettingsToggle(title: "启用 Telegram 评论通知", isOn: toggleBinding("telegram_comment_notifications_enabled"))
                 Label("保存设置后会通过原生 API 同步到网站后台调度器。", systemImage: "arrow.triangle.2.circlepath")
-                    .font(.caption)
+                    .font(CreationDesign.interface(.caption))
                     .foregroundStyle(AdminDesign.muted)
                 if let telegramStatus {
                     HStack(spacing: 8) {
@@ -2326,10 +2003,10 @@ private struct AdminSettingsView: View {
                             .foregroundStyle(telegramStatus.configured ? AdminDesign.accent : AdminDesign.danger)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(telegramStatus.configured ? "Telegram 服务已配置" : "Telegram 服务未配置")
-                                .font(.subheadline.weight(.medium))
+                                .font(CreationDesign.interface(.subheadline).weight(.medium))
                             if let lastCheckedAt = telegramStatus.qqMusic.lastCheckedAt {
                                 Text("QQ 音乐健康检查：\(telegramStatus.qqMusic.label ?? telegramStatus.qqMusic.status ?? "未知") · \(AdminFormatters.displayDate(lastCheckedAt))")
-                                    .font(.system(size: 10))
+                                    .font(CreationDesign.time(.caption2))
                                     .foregroundStyle(AdminDesign.muted)
                             }
                         }
@@ -2350,13 +2027,13 @@ private struct AdminSettingsView: View {
                         .disabled(isTelegramChecking || !telegramStatus.configured)
                         if let telegramMessage {
                             Text(telegramMessage)
-                                .font(.system(size: 10))
+                                .font(CreationDesign.interface(size: 10))
                                 .foregroundStyle(AdminDesign.accent)
                         }
                     }
                     if let telegramError {
                         Text(telegramError)
-                            .font(.system(size: 10))
+                            .font(CreationDesign.interface(size: 10))
                             .foregroundStyle(AdminDesign.danger)
                             .lineLimit(2)
                     }
@@ -2392,7 +2069,7 @@ private struct AdminSettingsView: View {
                     Text("底部展开播放器").tag("bottom")
                 }
                 .pickerStyle(.menu)
-                .font(.subheadline)
+                .font(CreationDesign.interface(.subheadline))
             }
         }
     }
@@ -2409,43 +2086,31 @@ private struct AdminSettingsView: View {
                             }
                         }
                         .pickerStyle(.menu)
-                        .font(.subheadline)
+                        .font(CreationDesign.interface(.subheadline))
                     }
                 }
 
-                AdminSettingsCard(title: "版式主题", subtitle: "页面结构") {
-                    Picker("前台版式", selection: textBinding("layout_theme", fallback: "classic")) {
-                        Text("经典版").tag("classic")
-                        Text("编辑版").tag("editorial")
-                    }
-                    .pickerStyle(.menu)
-                    .font(.subheadline)
-                }
             }
 
             AdminSettingsCard(title: "深色模式", subtitle: "访客也可以在前台页头切换") {
-                Picker("模式", selection: textBinding("dark_mode", fallback: "auto")) {
-                    Text("跟随系统").tag("auto")
-                    Text("浅色").tag("light")
-                    Text("深色").tag("dark")
-                }
-                .pickerStyle(.segmented)
+                CreationSegmentedPicker(selection: textBinding("dark_mode", fallback: "auto"), values: ["auto", "light", "dark"], titles: ["跟随系统", "浅色", "深色"])
+                    .accessibilityLabel("模式")
             }
 
-            if model.value("layout_theme", fallback: "classic") == "classic" {
+            Group {
                 AdminSettingsCard(title: "经典版首页", subtitle: "书香版首页内容与互动选项") {
                     HStack(spacing: 12) {
                         AdminImageView(rawURL: model.value("classic_home_image"), siteRoot: session.api.siteRoot, size: CGSize(width: 80, height: 52), cornerRadius: 12)
                         VStack(alignment: .leading, spacing: 5) {
                             Text("首页图片")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(CreationDesign.interface(size: 12, weight: .semibold))
                             Text(model.value("classic_home_image").isEmpty ? "可选" : model.value("classic_home_image"))
-                                .font(.system(size: 10))
+                                .font(CreationDesign.interface(size: 10))
                                 .foregroundStyle(AdminDesign.muted)
                                 .lineLimit(1)
                             PhotosPicker(selection: $selectedClassicHomeImageItem, matching: .images) {
                                 Text("上传首页图片")
-                                    .font(.subheadline.weight(.medium))
+                                    .font(CreationDesign.interface(.subheadline).weight(.medium))
                                     .foregroundStyle(AdminDesign.accent)
                             }
                         }
@@ -2456,39 +2121,26 @@ private struct AdminSettingsView: View {
                     AdminSettingsField(label: "信息流标题", placeholder: "索引", text: textBinding("classic_home_section_title"))
                     VStack(alignment: .leading, spacing: 6) {
                         Text("桌面侧栏介绍")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(CreationDesign.interface(size: 12, weight: .semibold))
                         AdminSettingsMultilineField(
                             text: textBinding("classic_sidebar_intro"),
                             placeholder: "A minimal Astro theme\nfor essays, notes, and docs.\nDesigned for reading,\nopen-source.",
                             minHeight: 96
                         )
                         Text("显示在经典版桌面左侧的站点名称与菜单之间；支持换行，清空后不显示。")
-                            .font(.system(size: 10))
+                            .font(CreationDesign.interface(size: 10))
                             .foregroundStyle(AdminDesign.muted)
                     }
                     AdminSettingsToggle(title: "首页混入想法时间流", isOn: toggleBinding("classic_home_include_bits"))
                     AdminSettingsToggle(title: "显示互动信息", isOn: toggleBinding("classic_show_interactions"))
                     AdminSettingsToggle(title: "显示评论区", isOn: toggleBinding("classic_show_comments"))
                 }
-            } else {
-                AdminSettingsCard(title: "编辑版页面显示", subtitle: "文章列表、文章页和导航入口") {
-                    AdminSettingsToggle(title: "显示文章页“继续阅读”", isOn: toggleBinding("show_related_posts"))
-                    AdminSettingsToggle(title: "显示文章列表页“查看更多文章”", isOn: toggleBinding("show_more_posts"))
-                    AdminSettingsToggle(title: "显示文章右侧目录", isOn: toggleBinding("show_table_of_contents"))
-                    Divider().overlay(AdminDesign.border)
-                    AdminSettingsToggle(title: "显示首页", isOn: toggleBinding("show_home_page"))
-                    AdminSettingsToggle(title: "显示想法页面", isOn: toggleBinding("show_moments_page"))
-                    AdminSettingsToggle(title: "显示文章页面", isOn: toggleBinding("show_posts_page"))
-                    AdminSettingsToggle(title: "显示引用页面", isOn: toggleBinding("show_references_page"))
-                    AdminSettingsToggle(title: "显示作品页面", isOn: toggleBinding("show_works_page"))
-                    AdminSettingsToggle(title: "显示关于页面", isOn: toggleBinding("show_about_page"))
-                }
             }
         }
     }
 
     private var themePaletteOptions: [AdminThemePalette] {
-        AdminThemePalette.options(layoutTheme: model.value("layout_theme", fallback: "classic"))
+        AdminThemePalette.options(layoutTheme: "classic")
     }
 
     private var currentThemePalette: AdminThemePalette {
@@ -2567,11 +2219,13 @@ private struct AdminSettingsView: View {
 private struct AdminSettingsCard<Content: View>: View {
     let title: String
     let subtitle: String
+    let subtitleFont: Font
     let content: Content
 
-    init(title: String, subtitle: String, @ViewBuilder content: () -> Content) {
+    init(title: String, subtitle: String = "", subtitleFont: Font = CreationDesign.interface(.caption), @ViewBuilder content: () -> Content) {
         self.title = title
         self.subtitle = subtitle
+        self.subtitleFont = subtitleFont
         self.content = content()
     }
 
@@ -2579,11 +2233,13 @@ private struct AdminSettingsCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
-                    .font(.subheadline)
+                    .font(CreationDesign.interface(.subheadline))
                     .foregroundStyle(AdminDesign.foreground)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(AdminDesign.muted)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(subtitleFont)
+                        .foregroundStyle(AdminDesign.muted)
+                }
             }
             content
         }
@@ -2652,7 +2308,7 @@ private struct AdminQQMusicPanel: View {
                     .fill(model.status?.playable == false ? Color.orange : (model.status?.loggedIn == true ? AdminDesign.accent : AdminDesign.muted))
                     .frame(width: 8, height: 8)
                 Text(statusText)
-                    .font(.subheadline.weight(.medium))
+                    .font(CreationDesign.interface(.subheadline).weight(.medium))
                     .foregroundStyle(AdminDesign.foreground)
                 Spacer()
                 Button {
@@ -2697,18 +2353,18 @@ private struct AdminQQMusicPanel: View {
                         .frame(width: 128, height: 128)
                     VStack(alignment: .leading, spacing: 5) {
                         Text("请使用\(qr.isNativeAppQR ? " QQ 音乐 App" : "手机 QQ")扫码")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(CreationDesign.interface(size: 12, weight: .semibold))
                         Text("扫码并确认后会自动更新登录状态。")
-                            .font(.caption)
+                            .font(CreationDesign.interface(.caption))
                             .foregroundStyle(AdminDesign.muted)
                         if let source = qr.source,
                            let label = source.label?.trimmedNonEmpty {
                             Text("来源：\(label)\(source.website?.trimmedNonEmpty.map { "（\($0)）" } ?? "")")
-                                .font(.system(size: 10))
+                                .font(CreationDesign.interface(size: 10))
                                 .foregroundStyle(AdminDesign.muted)
                         }
                         Button("取消扫码") { model.cancelLogin() }
-                            .font(.subheadline.weight(.medium))
+                            .font(CreationDesign.interface(.subheadline).weight(.medium))
                             .foregroundStyle(AdminDesign.accent)
                     }
                 }
@@ -2735,12 +2391,12 @@ private struct AdminQQMusicPanel: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .font(.subheadline)
+                .font(CreationDesign.interface(.subheadline))
             }
 
             if let message = model.message, !message.isEmpty {
                 Text(message)
-                    .font(.caption)
+                    .font(CreationDesign.interface(.caption))
                     .foregroundStyle(AdminDesign.muted)
             }
         }
@@ -2769,7 +2425,7 @@ private struct AdminQRImage: View {
             }
         } else {
             Image(systemName: "qrcode")
-                .font(.system(size: 44))
+                .font(CreationDesign.interface(size: 44))
                 .foregroundStyle(AdminDesign.muted)
         }
     }
@@ -2849,9 +2505,9 @@ private struct AdminSettingsField: View {
             .overlay(alignment: .bottom) { Rectangle().fill(CreationDesign.border).frame(height: 0.5) }
     }
 
-    private var fieldLabel: some View { Text(label).font(.subheadline).foregroundStyle(AdminDesign.muted) }
+    private var fieldLabel: some View { Text(label).font(CreationDesign.interface(.subheadline)).foregroundStyle(AdminDesign.muted) }
     private var input: some View {
-        TextField(placeholder, text: $text).font(.body).foregroundStyle(AdminDesign.foreground)
+        TextField(placeholder, text: $text).font(CreationDesign.interface(.body)).foregroundStyle(AdminDesign.foreground)
             .textInputAutocapitalization(.never).autocorrectionDisabled().frame(minHeight: 48)
             .accessibilityLabel(label)
     }
@@ -2861,18 +2517,20 @@ private struct AdminSettingsMultilineField: View {
     @Binding var text: String
     let placeholder: String
     let minHeight: CGFloat
+    var font: Font = CreationDesign.copy()
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             if text.isEmpty {
                 Text(placeholder)
-                    .font(.body)
+                    .font(font)
                     .foregroundStyle(AdminDesign.muted.opacity(0.8))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
+                    .allowsHitTesting(false)
             }
             TextEditor(text: $text)
-                .font(.body)
+                .font(font)
                 .foregroundStyle(AdminDesign.foreground)
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: minHeight)
@@ -2888,7 +2546,7 @@ private struct AdminSettingsToggle: View {
 
     var body: some View {
         Toggle(title, isOn: $isOn)
-            .font(.subheadline)
+            .font(CreationDesign.interface(.subheadline))
             .tint(AdminDesign.accent)
     }
 }
@@ -2922,7 +2580,7 @@ private final class AdminAttachmentsModel: ObservableObject {
         self.restrictToCurrentPage = restrictToCurrentPage
     }
 
-    func load() async {
+    func load(reuseLoaded: Bool = false) async {
         requestSerial += 1
         let requestID = requestSerial
         isLoading = true
@@ -2931,7 +2589,9 @@ private final class AdminAttachmentsModel: ObservableObject {
             if requestID == requestSerial { isLoading = false }
         }
         do {
-            let page = try await api.fetchAttachments(page: 1, limit: restrictToCurrentPage ? 100 : 50, postID: postID)
+            if !reuseLoaded { await api.discardLoadedData(for: ["attachments"]) }
+            guard requestID == requestSerial, !Task.isCancelled else { return }
+            let page = try await api.fetchAttachments(page: 1, limit: restrictToCurrentPage ? 100 : 50, postID: postID, reuseLoaded: reuseLoaded)
             guard requestID == requestSerial else { return }
             items = filter(page.items)
             meta = page.meta
@@ -2959,7 +2619,7 @@ private final class AdminAttachmentsModel: ObservableObject {
         isLoadingMore = true
         defer { isLoadingMore = false }
         do {
-            let next = try await api.fetchAttachments(page: page + 1, limit: limit, postID: postID)
+            let next = try await api.fetchAttachments(page: page + 1, limit: limit, postID: postID, reuseLoaded: true)
             guard requestID == requestSerial else { return }
             items.append(contentsOf: filter(next.items))
             meta = next.meta
@@ -3080,7 +2740,7 @@ private struct AdminAttachmentsView: View {
                     Menu {
                         Picker("排序", selection: $sort) { ForEach(["最近上传", "文件名称", "文件大小"], id: \.self) { Text($0).tag($0) } }
                         Button("清理未使用文件", systemImage: "trash.slash", role: .destructive) { showingCleanupConfirmation = true }
-                    } label: { Image(systemName: "arrow.up.arrow.down").font(.title3).frame(width: 48, height: 48).background(CreationDesign.surface, in: Circle()) }.accessibilityLabel("文件排序与管理")
+                    } label: { Image(systemName: "arrow.up.arrow.down").font(CreationDesign.interface(.title3)).frame(width: 48, height: 48).background(CreationDesign.surface, in: Circle()) }.accessibilityLabel("文件排序与管理")
                 }
                 CreationSearchField(placeholder: "搜索已加载的文件", text: $search)
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -3091,7 +2751,7 @@ private struct AdminAttachmentsView: View {
                     }
                 }
                 CreationSectionHeading(title: sort, detail: "已加载 \(model.items.count) 个")
-                if model.isUploading { Label("正在上传，请稍候…", systemImage: "arrow.up.circle").font(.subheadline).foregroundStyle(CreationDesign.accent) }
+                if model.isUploading { Label("正在上传，请稍候…", systemImage: "arrow.up.circle").font(CreationDesign.interface(.subheadline)).foregroundStyle(CreationDesign.accent) }
                 if let error = model.errorMessage { CreationNotice(text: error, isError: true); Button("重新加载") { Task { await model.load() } } }
                 if model.isLoading && model.items.isEmpty { ProgressView("正在加载文件…").frame(maxWidth: .infinity, minHeight: 200) }
                 else if visibleItems.isEmpty && model.errorMessage == nil {
@@ -3114,7 +2774,7 @@ private struct AdminAttachmentsView: View {
                     Button("从文件选择", systemImage: "folder") { showingImporter = true }
                     Button("从相册选择", systemImage: "photo") { showingPhotos = true }
                 } label: {
-                    Image(systemName: "plus").font(.system(size: 23)).foregroundStyle(CreationDesign.primaryText)
+                    Image(systemName: "plus").font(CreationDesign.interface(size: 23)).foregroundStyle(CreationDesign.primaryText)
                         .frame(width: 56, height: 56).background(CreationDesign.accent, in: RoundedRectangle(cornerRadius: 12))
                 }.accessibilityLabel("上传文件").padding(20).disabled(model.isUploading)
                     .shadow(color: .black.opacity(0.12), radius: 6, x: 0, y: 3)
@@ -3146,7 +2806,7 @@ private struct AdminAttachmentsView: View {
             } message: { Text("删除未被文章、絮语或站点设置引用的文件，此操作不可撤销。") }
             .refreshable { await model.load() }
             .task {
-                await model.load()
+                await model.load(reuseLoaded: true)
                 if CreationPreview.isEnabled {
                     let mime = ["file-reader": "text/markdown", "file-pdf": "application/pdf", "file-image": "image/jpeg"][CreationPreview.screen]
                     if let mime, let item = model.items.first(where: { $0.mimeType == mime }) { preview = AttachmentReaderRoute(attachment: item) }
@@ -3161,13 +2821,13 @@ private struct AdminAttachmentsView: View {
                         CreationRemoteImage(path: attachment.path, site: session.api.siteRoot).frame(width: 54, height: 62).clipShape(RoundedRectangle(cornerRadius: 12))
                     } else {
                         Image(systemName: LibraryFileKind.kind(mime: attachment.mimeType, name: attachment.originalName).symbol)
-                            .font(.title2).foregroundStyle(CreationDesign.accent).frame(width: 54, height: 62)
+                            .font(CreationDesign.interface(.title2)).foregroundStyle(CreationDesign.accent).frame(width: 54, height: 62)
                             .background(CreationDesign.accentSoft, in: RoundedRectangle(cornerRadius: 12))
                     }
                     VStack(alignment: .leading, spacing: 7) {
-                        Text(attachment.originalName).font(.body.weight(.medium)).foregroundStyle(CreationDesign.foreground).lineLimit(2).multilineTextAlignment(.leading)
-                        Text("\(AdminFormatters.fileSize(attachment.size)) · \(String(attachment.createdAt.prefix(10)))").font(.caption).foregroundStyle(CreationDesign.secondary)
-                        if attachment.referenced { Label("正在使用", systemImage: "link").font(.caption2).foregroundStyle(CreationDesign.accent) }
+                        Text(attachment.originalName).font(CreationDesign.interface(.body).weight(.medium)).foregroundStyle(CreationDesign.foreground).lineLimit(2).multilineTextAlignment(.leading)
+                        Text("\(AdminFormatters.fileSize(attachment.size)) · \(String(attachment.createdAt.prefix(10)))").font(CreationDesign.time()).foregroundStyle(CreationDesign.secondary)
+                        if attachment.referenced { Label("正在使用", systemImage: "link").font(CreationDesign.interface(.caption2)).foregroundStyle(CreationDesign.accent) }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityHint("打开并阅读文件")
@@ -3180,12 +2840,12 @@ private struct AdminAttachmentsView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     CreationRemoteImage(path: attachment.path, site: session.api.siteRoot)
                         .aspectRatio(1.2, contentMode: .fit).clipped()
-                    Text(attachment.originalName).font(.subheadline).foregroundStyle(CreationDesign.foreground)
+                    Text(attachment.originalName).font(CreationDesign.interface(.subheadline)).foregroundStyle(CreationDesign.foreground)
                         .lineLimit(2).multilineTextAlignment(.leading)
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityHint("打开并阅读图片")
             HStack(spacing: 0) {
-                Text(AdminFormatters.fileSize(attachment.size)).font(.caption).foregroundStyle(CreationDesign.secondary)
+                Text(AdminFormatters.fileSize(attachment.size)).font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.secondary)
                 Spacer(minLength: 0)
                 fileActions(attachment)
             }
@@ -3224,7 +2884,7 @@ private struct AdminAttachmentDetailView: View {
             VStack(alignment: .leading, spacing: 12) {
                 AdminPreviewHeader(overline: "ATTACHMENT DETAIL", title: "附件详情", subtitle: "文件信息、引用关系和图片操作") {
                     Image(systemName: attachment.mimeType.hasPrefix("image/") ? "photo" : "doc")
-                        .font(.system(size: 17, weight: .medium))
+                        .font(CreationDesign.interface(size: 17, weight: .medium))
                         .foregroundStyle(AdminDesign.accent)
                         .frame(width: 38, height: 38)
                         .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -3236,7 +2896,7 @@ private struct AdminAttachmentDetailView: View {
                 }
                 if let message {
                     Label(message, systemImage: "checkmark.circle.fill")
-                        .font(.subheadline)
+                        .font(CreationDesign.interface(.subheadline))
                         .foregroundStyle(AdminDesign.accent)
                 }
 
@@ -3246,23 +2906,23 @@ private struct AdminAttachmentDetailView: View {
                             AdminImageView(rawURL: attachment.path, siteRoot: api.siteRoot, size: CGSize(width: 92, height: 92), cornerRadius: 14)
                         } else {
                             Image(systemName: "doc.richtext")
-                                .font(.system(size: 30, weight: .medium))
+                                .font(CreationDesign.interface(size: 30, weight: .medium))
                                 .foregroundStyle(AdminDesign.accent)
                                 .frame(width: 92, height: 92)
                                 .background(AdminDesign.accentSoft, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
                         VStack(alignment: .leading, spacing: 5) {
                             Text(attachment.originalName)
-                                .font(.headline)
+                                .font(CreationDesign.interface(.headline))
                                 .foregroundStyle(AdminDesign.foreground)
                             Text(attachment.mimeType)
-                                .font(.caption)
+                                .font(CreationDesign.interface(.caption))
                                 .foregroundStyle(AdminDesign.muted)
                             Text(AdminFormatters.fileSize(attachment.size))
-                                .font(.caption)
+                                .font(CreationDesign.interface(.caption))
                                 .foregroundStyle(AdminDesign.muted)
                             Text("上传：\(AdminFormatters.displayDate(attachment.createdAt))")
-                                .font(.caption)
+                                .font(CreationDesign.time())
                                 .foregroundStyle(AdminDesign.muted)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3270,7 +2930,7 @@ private struct AdminAttachmentDetailView: View {
                     if let url = attachmentURL {
                         Link(destination: url) {
                             Label("打开附件", systemImage: "arrow.up.right")
-                                .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                                .font(CreationDesign.interface(.subheadline).weight(.medium)).frame(minHeight: 44)
                                 .foregroundStyle(AdminDesign.accent)
                         }
                     }
@@ -3279,7 +2939,7 @@ private struct AdminAttachmentDetailView: View {
                 AdminSettingsCard(title: "引用关系", subtitle: "查看该附件被哪些文章、想法或站点设置使用") {
                     if attachment.references.isEmpty {
                         Text("当前没有检测到引用")
-                            .font(.subheadline)
+                            .font(CreationDesign.interface(.subheadline))
                             .foregroundStyle(AdminDesign.muted)
                     } else {
                         ForEach(Array(attachment.references.enumerated()), id: \.offset) { _, reference in
@@ -3288,9 +2948,9 @@ private struct AdminAttachmentDetailView: View {
                                     .foregroundStyle(AdminDesign.accent)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(reference.label)
-                                        .font(.body.weight(.medium))
+                                        .font(CreationDesign.interface(.body).weight(.medium))
                                     Text([reference.type, reference.usage].compactMap { $0?.trimmedNonEmpty }.joined(separator: " · "))
-                                        .font(.caption)
+                                        .font(CreationDesign.interface(.caption))
                                         .foregroundStyle(AdminDesign.muted)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3314,7 +2974,7 @@ private struct AdminAttachmentDetailView: View {
                                 if isCompressing { ProgressView().tint(.white) }
                                 Text(isCompressing ? "压缩中…" : "开始压缩")
                             }
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(CreationDesign.interface(size: 12, weight: .semibold))
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 11)
@@ -3340,7 +3000,7 @@ private struct AdminAttachmentDetailView: View {
                                 if isCropping { ProgressView().tint(.white) }
                                 Text(isCropping ? "裁切中…" : "生成裁切附件")
                             }
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(CreationDesign.interface(size: 12, weight: .semibold))
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 11)
@@ -3351,7 +3011,7 @@ private struct AdminAttachmentDetailView: View {
 
                         if let createdAttachment {
                             Text("已生成：\(createdAttachment.originalName)")
-                                .font(.system(size: 11))
+                                .font(CreationDesign.interface(size: 11))
                                 .foregroundStyle(AdminDesign.accent)
                         }
                     }
@@ -3423,11 +3083,11 @@ private struct AdminAttachmentNumberField: View {
     var body: some View {
         HStack(spacing: 4) {
             Text(label)
-                .font(.system(size: 10, weight: .medium))
+                .font(CreationDesign.interface(size: 10, weight: .medium))
                 .foregroundStyle(AdminDesign.muted)
             TextField("0", text: $text)
                 .keyboardType(.numberPad)
-                .font(.system(size: 11))
+                .font(CreationDesign.interface(size: 11))
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 8)
@@ -3472,10 +3132,10 @@ struct AdminAttachmentPickerSheet: View {
                             }
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(attachment.originalName).lineLimit(1)
-                                Text(attachment.path).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                Text(attachment.path).font(CreationDesign.interface(.caption2)).foregroundStyle(.secondary).lineLimit(1)
                             }
                             Spacer()
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right").font(CreationDesign.interface(.caption)).foregroundStyle(.secondary)
                         }
                     }
                     .buttonStyle(.plain)
@@ -3494,7 +3154,7 @@ struct AdminAttachmentPickerSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
             }
             .overlay { if model.isLoading { ProgressView() } }
-            .task { await model.load() }
+            .task { await model.load(reuseLoaded: true) }
         }
     }
 }
@@ -3535,7 +3195,7 @@ private struct AdminMusicInsertSheet: View {
                         .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
                     }
                     if let errorMessage {
-                        Text(errorMessage).font(.caption).foregroundStyle(.red)
+                        Text(errorMessage).font(CreationDesign.interface(.caption)).foregroundStyle(.red)
                     }
                 }
 
@@ -3555,7 +3215,7 @@ private struct AdminMusicInsertSheet: View {
                                     AdminImageView(rawURL: track.cover, siteRoot: api.siteRoot, size: CGSize(width: 42, height: 42), cornerRadius: 8)
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(track.name).foregroundStyle(.primary).lineLimit(1)
-                                        Text("\(track.artist) · \(track.album)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                        Text("\(track.artist) · \(track.album)").font(CreationDesign.interface(.caption)).foregroundStyle(.secondary).lineLimit(1)
                                     }
                                     Spacer()
                                 }
@@ -3580,7 +3240,7 @@ private struct AdminMusicInsertSheet: View {
                                     AdminImageView(rawURL: playlist.cover, siteRoot: api.siteRoot, size: CGSize(width: 42, height: 42), cornerRadius: 8)
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(playlist.name).foregroundStyle(.primary).lineLimit(1)
-                                        Text("\(playlist.creator) · \(playlist.count ?? 0) 首").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                        Text("\(playlist.creator) · \(playlist.count ?? 0) 首").font(CreationDesign.interface(.caption)).foregroundStyle(.secondary).lineLimit(1)
                                     }
                                     Spacer()
                                 }
@@ -3729,17 +3389,18 @@ struct AdminPreviewMarkdownBlock: View {
     let block: MarkdownBlock
     let api: AdminAPIClient
     let siteRoot: URL
+    var mediaPlayback = false
 
     var body: some View {
         switch block {
         case .heading(let level, let text):
             Text(MarkdownParser.attributed(text))
-                .font(level == 1 ? .title2.weight(.bold) : level == 2 ? .title3.weight(.bold) : .headline.weight(.semibold))
+                .font(CreationDesign.contentTitle(level == 1 ? 22 : level == 2 ? 20 : 17, relativeTo: level == 1 ? .title2 : level == 2 ? .title3 : .headline, bold: true))
                 .foregroundStyle(AdminDesign.foreground)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .paragraph(let text):
             Text(MarkdownParser.attributed(text))
-                .font(.body)
+                .font(CreationDesign.copy())
                 .foregroundStyle(AdminDesign.foreground)
                 .lineSpacing(4)
                 .textSelection(.enabled)
@@ -3754,34 +3415,22 @@ struct AdminPreviewMarkdownBlock: View {
                     .fill(AdminDesign.accent)
                     .frame(width: 3)
                 Text(MarkdownParser.attributed(text))
-                    .font(.body.italic())
+                    .font(CreationDesign.copy().italic())
                     .foregroundStyle(AdminDesign.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.vertical, 4)
         case .music(let spec):
-            AdminPreviewMusicCard(spec: spec, api: api)
+            if mediaPlayback { CreationMusicCard(music: CreationMusic(spec: spec), api: api, inline: MarkdownParser.musicMarker(from: spec)?.folded == true) }
+            else { AdminPreviewMusicCard(spec: spec, api: api) }
         case .video(let url):
-            AdminPreviewVideoCard(rawURL: url, siteRoot: siteRoot)
+            if mediaPlayback { CreationReadableVideo(rawURL: url, siteRoot: siteRoot) }
+            else { AdminPreviewVideoCard(rawURL: url, siteRoot: siteRoot) }
         case .code(let language, let text):
             if language?.lowercased() == "music" || language?.lowercased() == "qqvip" {
                 AdminPreviewMusicCard(spec: text, api: api)
             } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    if let language, language != "text" {
-                        Text(language)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(AdminDesign.muted)
-                    }
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(text)
-                            .font(.system(size: 13, design: .monospaced))
-                            .foregroundStyle(AdminDesign.foreground)
-                            .textSelection(.enabled)
-                            .padding(14)
-                    }
-                }
-                .background(AdminDesign.surfaceSoft, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                CreationReadableCode(language: language, text: text)
             }
         case .image(let url, let alt):
             VStack(alignment: .leading, spacing: 6) {
@@ -3789,7 +3438,7 @@ struct AdminPreviewMarkdownBlock: View {
                     .frame(maxWidth: .infinity)
                 if !alt.isEmpty {
                     Text(alt)
-                        .font(.system(size: 11))
+                        .font(CreationDesign.interface(size: 11))
                         .foregroundStyle(AdminDesign.muted)
                 }
             }
@@ -3799,13 +3448,151 @@ struct AdminPreviewMarkdownBlock: View {
             AdminPreviewReferenceCard(reference: reference, siteRoot: siteRoot)
         case .unresolvedReference(let payload):
             Label(payload.isEmpty ? "引用内容暂不可用" : "引用内容暂不可用：\(payload)", systemImage: "link.badge.plus")
-                .font(.system(size: 12))
+                .font(CreationDesign.interface(size: 12))
                 .foregroundStyle(AdminDesign.muted)
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(AdminDesign.surfaceSoft, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
+}
+
+struct CreationCodeContent {
+    let text: String
+    var lineCount: Int {
+        var lines = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").components(separatedBy: "\n")
+        if lines.count > 1 && lines.last == "" { lines.removeLast() }
+        return lines.count
+    }
+    var collapsible: Bool { lineCount > 16 }
+}
+
+private struct CreationReadableCode: View {
+    let language: String?
+    let text: String
+    @State private var expanded = false
+    @State private var copied = false
+    @ScaledMetric(relativeTo: .caption) private var codeSize: CGFloat = 13
+    private var code: CreationCodeContent { CreationCodeContent(text: text) }
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(language?.trimmedNonEmpty ?? "text")
+                Spacer()
+                Text("\(code.lineCount) 行")
+                Button { UIPasteboard.general.string = text; copied = true } label: {
+                    Label(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc")
+                }.buttonStyle(.borderless).accessibilityLabel("复制完整代码")
+            }.font(CreationDesign.interface(.caption)).foregroundStyle(.secondary).padding(12)
+            ScrollView(.horizontal) {
+                Text(text).font(.system(size: codeSize, design: .monospaced))
+                    .fixedSize(horizontal: true, vertical: true).textSelection(.enabled)
+                    .padding(14).frame(maxHeight: code.collapsible && !expanded ? 320 : nil, alignment: .top).clipped()
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if code.collapsible {
+                Button { expanded.toggle() } label: {
+                    Label(expanded ? "收起代码" : "展开全部代码（\(code.lineCount) 行）", systemImage: expanded ? "chevron.up" : "chevron.down")
+                        .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).font(CreationDesign.interface(.caption))
+                    .accessibilityIdentifier("reader.code.expand")
+            }
+        }.background(CreationDesign.soft, in: RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .onChange(of: text) { _, _ in expanded = false; copied = false }
+    }
+}
+
+@MainActor
+private final class CreationVideoPlayback: ObservableObject {
+    @Published var player: AVPlayer?
+    @Published var error: String?
+    private var observation: NSKeyValueObservation?
+    private var rateObservation: NSKeyValueObservation?
+    private var generation = UUID()
+    func start(_ url: URL) {
+        stop()
+        let token = generation
+        let item = AVPlayerItem(url: url)
+        player = AVPlayer(playerItem: item)
+        rateObservation = player?.observe(\.rate, options: [.new]) { @Sendable [weak self] player, _ in
+            let playing = player.rate > 0
+            Task { @MainActor in
+                guard let self, self.generation == token, playing else { return }
+                CreationAudioPlayer.shared.pause()
+            }
+        }
+        observation = item.observe(\.status, options: [.initial, .new]) { @Sendable [weak self] item, _ in
+            let failed = item.status == .failed
+            Task { @MainActor in
+                guard let self, self.generation == token, failed else { return }
+                self.player?.pause()
+                self.error = "视频加载失败，请重试"
+            }
+        }
+        // Prepare native controls and the first frame; playback remains user initiated.
+    }
+    func stop() {
+        generation = UUID(); observation?.invalidate(); observation = nil
+        rateObservation?.invalidate(); rateObservation = nil
+        player?.pause(); player = nil; error = nil
+    }
+}
+
+private struct CreationReadableVideo: View {
+    let rawURL: String
+    let siteRoot: URL
+    @StateObject private var playback = CreationVideoPlayback()
+    @State private var webError: String?
+    private var url: URL? { SiteURLResolver(siteRoot: siteRoot).absoluteURL(rawURL) }
+    private var embed: URL? { CreationVideoInput.canonical(rawURL).flatMap(CreationVideoInput.embedURL) }
+    var body: some View {
+        VStack(spacing: 8) {
+            if let error = webError ?? playback.error {
+                ContentUnavailableView {
+                    Label(error, systemImage: "video.slash")
+                } actions: {
+                    Button("重试") { webError = nil; if embed == nil, let url { playback.start(url) } }
+                }.frame(minHeight: 180)
+            } else if let embed {
+                CreationWebVideo(url: embed, error: $webError).frame(height: 220)
+                    .accessibilityIdentifier("reader.video.embedded")
+            } else if let player = playback.player {
+                VideoPlayer(player: player).frame(height: 220)
+                    .accessibilityIdentifier("reader.video.native")
+            } else if url != nil {
+                ProgressView("正在加载视频…").frame(maxWidth: .infinity, minHeight: 180)
+            } else { Label("视频地址不可用", systemImage: "video.slash") }
+        }.clipShape(RoundedRectangle(cornerRadius: 12))
+            .task(id: rawURL) { if embed == nil, let url { playback.start(url) } }
+            .onDisappear { playback.stop(); webError = nil }
+    }
+}
+
+private struct CreationWebVideo: UIViewRepresentable {
+    let url: URL
+    @Binding var error: String?
+    func makeCoordinator() -> Coordinator { Coordinator(error: $error) }
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        var error: Binding<String?>
+        init(error: Binding<String?>) { self.error = error }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError failure: Error) {
+            if !isRequestCancellation(failure) { error.wrappedValue = "视频加载失败，请重试" }
+        }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError failure: Error) {
+            if !isRequestCancellation(failure) { error.wrappedValue = "视频加载失败，请重试" }
+        }
+    }
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = .all
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.navigationDelegate = context.coordinator
+        web.load(URLRequest(url: url)); return web
+    }
+    func updateUIView(_ view: WKWebView, context: Context) {}
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) { view.navigationDelegate = nil; view.stopLoading(); view.loadHTMLString("", baseURL: nil) }
 }
 
 private struct AdminPreviewList: View {
@@ -3817,11 +3604,11 @@ private struct AdminPreviewList: View {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 HStack(alignment: .top, spacing: 8) {
                     Text(ordered ? "\(index + 1)." : "•")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(CreationDesign.interface(size: 14, weight: .semibold))
                         .foregroundStyle(AdminDesign.accent)
                         .frame(minWidth: ordered ? 22 : 12, alignment: .trailing)
                     Text(MarkdownParser.attributed(item))
-                        .font(.body)
+                        .font(CreationDesign.copy())
                         .foregroundStyle(AdminDesign.foreground)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -3868,17 +3655,17 @@ private struct AdminPreviewVideoCard: View {
             if resolvedURL != nil {
                 HStack(spacing: 12) {
                     Image(systemName: isWebPageEmbed ? "play.rectangle.fill" : "video.fill")
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(CreationDesign.interface(size: 22, weight: .semibold))
                         .foregroundStyle(AdminDesign.accent)
                         .frame(width: 48, height: 48)
                         .background(AdminDesign.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(sourceLabel)占位卡片")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(CreationDesign.interface(size: 14, weight: .semibold))
                             .foregroundStyle(AdminDesign.foreground)
                         Text("Markdown 预览不播放视频")
-                            .font(.system(size: 11))
+                            .font(CreationDesign.interface(size: 11))
                             .foregroundStyle(AdminDesign.muted)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -3888,7 +3675,7 @@ private struct AdminPreviewVideoCard: View {
                 .background(AdminDesign.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
                 Label("视频地址不可用", systemImage: "video.slash")
-                    .font(.system(size: 12))
+                    .font(CreationDesign.interface(size: 12))
                     .foregroundStyle(AdminDesign.muted)
                     .frame(maxWidth: .infinity, minHeight: 76)
             }
@@ -3942,16 +3729,16 @@ private struct AdminPreviewMusicCard: View {
                     AdminImageView(rawURL: track.cover, siteRoot: api.siteRoot, size: CGSize(width: 72, height: 72), cornerRadius: 10)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(track.name.trimmedNonEmpty ?? "未命名歌曲")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(CreationDesign.interface(size: 15, weight: .semibold))
                             .foregroundStyle(AdminDesign.foreground)
                             .lineLimit(2)
                         Text(track.artist.trimmedNonEmpty ?? "未知歌手")
-                            .font(.system(size: 12))
+                            .font(CreationDesign.interface(size: 12))
                             .foregroundStyle(AdminDesign.muted)
                             .lineLimit(1)
                         if let album = track.album.trimmedNonEmpty {
                             Text(album)
-                                .font(.system(size: 11))
+                                .font(CreationDesign.interface(size: 11))
                                 .foregroundStyle(AdminDesign.muted)
                                 .lineLimit(1)
                         }
@@ -3963,22 +3750,22 @@ private struct AdminPreviewMusicCard: View {
                     AdminImageView(rawURL: marker.cover, siteRoot: api.siteRoot, size: CGSize(width: 72, height: 72), cornerRadius: 10)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(marker.title ?? (marker.type == "playlist" ? "QQ 音乐歌单" : "QQ 音乐歌曲"))
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(CreationDesign.interface(size: 15, weight: .semibold))
                             .foregroundStyle(AdminDesign.foreground)
                             .lineLimit(2)
                         if let artist = marker.artist {
                             Text(artist)
-                                .font(.system(size: 12))
+                                .font(CreationDesign.interface(size: 12))
                                 .foregroundStyle(AdminDesign.muted)
                                 .lineLimit(1)
                         }
                         if marker.type == "playlist", let playlistTrackCount {
                             Text("歌单 ID：\(marker.id) · \(playlistTrackCount) 首\(isRandomPlaylist ? " · 随机播放" : "")")
-                                .font(.system(size: 11))
+                                .font(CreationDesign.interface(size: 11))
                                 .foregroundStyle(AdminDesign.muted)
                         } else {
                             Text("音乐 ID：\(marker.id)\(marker.shuffle ? " · 随机播放" : "")")
-                                .font(.system(size: 11))
+                                .font(CreationDesign.interface(size: 11))
                                 .foregroundStyle(AdminDesign.muted)
                         }
                     }
@@ -3988,7 +3775,7 @@ private struct AdminPreviewMusicCard: View {
                 HStack(spacing: 10) {
                     ProgressView()
                     Text("正在读取音乐信息…")
-                        .font(.system(size: 12))
+                        .font(CreationDesign.interface(size: 12))
                         .foregroundStyle(AdminDesign.muted)
                 }
             } else {
@@ -3997,10 +3784,10 @@ private struct AdminPreviewMusicCard: View {
                         .foregroundStyle(AdminDesign.accent)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("音乐信息暂不可用")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(CreationDesign.interface(size: 13, weight: .semibold))
                             .foregroundStyle(AdminDesign.foreground)
                         Text("请检查音乐标记格式")
-                            .font(.system(size: 11))
+                            .font(CreationDesign.interface(size: 11))
                             .foregroundStyle(AdminDesign.muted)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -4012,13 +3799,13 @@ private struct AdminPreviewMusicCard: View {
                     Image(systemName: "music.note")
                     Text("音乐卡片（预览占位，不播放）")
                 }
-                .font(.system(size: 11))
+                .font(CreationDesign.interface(size: 11))
                 .foregroundStyle(AdminDesign.muted)
             }
 
             if let errorMessage, track == nil {
                 Text(errorMessage)
-                    .font(.system(size: 11))
+                    .font(CreationDesign.interface(size: 11))
                     .foregroundStyle(AdminDesign.danger)
             }
 
@@ -4087,11 +3874,11 @@ private struct AdminPreviewReferenceCard: View {
                 )
                 VStack(alignment: .leading, spacing: 5) {
                     Text(reference.displayTitle)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(CreationDesign.contentTitle(15, relativeTo: .subheadline, bold: true))
                         .foregroundStyle(AdminDesign.foreground)
                         .lineLimit(3)
                     Text(metadata)
-                        .font(.system(size: 11))
+                        .font(CreationDesign.time(.caption2))
                         .foregroundStyle(AdminDesign.muted)
                         .lineLimit(2)
                 }
@@ -4100,7 +3887,7 @@ private struct AdminPreviewReferenceCard: View {
 
             if let summary = (reference.summary ?? reference.description)?.trimmedNonEmpty {
                 Text(summary)
-                    .font(.system(size: 13))
+                    .font(CreationDesign.copy(13, relativeTo: .footnote))
                     .foregroundStyle(AdminDesign.foreground)
                     .lineSpacing(3)
                     .lineLimit(4)
@@ -4110,7 +3897,7 @@ private struct AdminPreviewReferenceCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(keyPoints), id: \.self) { point in
                         Label(point, systemImage: "checkmark")
-                            .font(.system(size: 11))
+                            .font(CreationDesign.interface(size: 11))
                             .foregroundStyle(AdminDesign.muted)
                     }
                 }
@@ -4119,7 +3906,7 @@ private struct AdminPreviewReferenceCard: View {
             if let sourceURL {
                 Link(destination: sourceURL) {
                     Label("阅读原文", systemImage: "arrow.up.right")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(CreationDesign.interface(size: 12, weight: .medium))
                         .foregroundStyle(AdminDesign.accent)
                 }
             }
@@ -4145,12 +3932,12 @@ struct AdminReferencePickerSheet: View {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 9) {
                         Text("读取站外文章")
-                            .font(.headline)
+                            .font(CreationDesign.interface(.headline))
                         HStack(spacing: 8) {
                             TextField("粘贴文章网址", text: $url)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
-                                .font(.body).frame(minHeight: 48)
+                                .font(CreationDesign.interface(.body)).frame(minHeight: 48)
                             Button {
                                 Task { await loadPreview() }
                             } label: {
@@ -4177,7 +3964,7 @@ struct AdminReferencePickerSheet: View {
                     if !history.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("最近引用")
-                                .font(.headline)
+                                .font(CreationDesign.interface(.headline))
                             ForEach(history.indices, id: \.self) { index in
                                 let snapshot = history[index]
                                 Button {
@@ -4231,17 +4018,17 @@ private struct AdminReferencePreviewCard: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "link")
-                .font(.system(size: 15, weight: .medium))
+                .font(CreationDesign.interface(size: 15, weight: .medium))
                 .foregroundStyle(AdminDesign.accent)
                 .frame(width: 36, height: 36)
                 .background(AdminDesign.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
                 Text(snapshot.title?.trimmedNonEmpty ?? "引用文章")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(CreationDesign.interface(size: 12, weight: .medium))
                     .foregroundStyle(AdminDesign.foreground)
                     .lineLimit(2)
                 Text([snapshot.source, snapshot.author, snapshot.url].compactMap { $0?.trimmedNonEmpty }.joined(separator: " · "))
-                    .font(.system(size: 10))
+                    .font(CreationDesign.interface(size: 10))
                     .foregroundStyle(AdminDesign.muted)
                     .lineLimit(1)
             }
@@ -4260,7 +4047,7 @@ private struct AdminReferencePreviewCard: View {
 // MARK: - More, moments, works and taxonomy
 
 private enum AdminManagementRoute: String, Identifiable, Hashable {
-    case files, siteSettings, musicSettings, appearance, updates, works, workEditor, taxonomy, references, referenceCache, referenceReader, about, overview
+    case files, siteSettings, musicSettings, appearance, updates, works, workEditor, taxonomy, references, referenceCache, referenceReader, about
     var id: String { rawValue }
 
     init?(previewScreen: String) {
@@ -4277,7 +4064,6 @@ private enum AdminManagementRoute: String, Identifiable, Hashable {
         case "reference-cache": self = .referenceCache
         case "reference-reader": self = .referenceReader
         case "about": self = .about
-        case "overview": self = .overview
         default: return nil
         }
     }
@@ -4309,7 +4095,7 @@ private struct AdminBackupsView: View {
                     HStack(alignment: .top) {
                         if job.isRunning { ProgressView() }
                         else { Image(systemName: job.status == "succeeded" ? "checkmark.circle" : "exclamationmark.circle") }
-                        Text(job.message ?? "任务已提交，等待处理").font(.subheadline)
+                        Text(job.message ?? "任务已提交，等待处理").font(CreationDesign.interface(.subheadline))
                     }.listRowBackground(CreationDesign.surface)
                 }
             }
@@ -4321,8 +4107,8 @@ private struct AdminBackupsView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Label(backup.title, systemImage: backup.kind == "complete" ? "lock.doc" : "externaldrive")
                         Text(AdminFormatters.displayDate(backup.createdAt) + " · " + ByteCountFormatter.string(fromByteCount: backup.size, countStyle: .file))
-                            .font(.caption).foregroundStyle(.secondary)
-                        Text(backup.name).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                            .font(CreationDesign.time()).foregroundStyle(.secondary)
+                        Text(backup.name).font(CreationDesign.interface(.caption2)).foregroundStyle(.secondary).textSelection(.enabled)
                         HStack {
                             Button(downloadingID == backup.id ? "下载中…" : "下载", systemImage: "arrow.down.doc") { transfer = Task { await download(backup) } }
                                 .disabled(downloadingID != nil || busy || job?.isRunning == true)
@@ -4336,7 +4122,7 @@ private struct AdminBackupsView: View {
             if let downloaded {
                 Section("下载完成") {
                     ShareLink(item: downloaded) { Label("存储到文件或分享", systemImage: "square.and.arrow.up") }
-                    Text("加密备份恢复时需要服务器上的原加密密钥，请妥善保管。文件可能包含私人站点数据。").font(.caption).foregroundStyle(.secondary)
+                    Text("加密备份恢复时需要服务器上的原加密密钥，请妥善保管。文件可能包含私人站点数据。").font(CreationDesign.interface(.caption)).foregroundStyle(.secondary)
                 }
             }
         }.listStyle(.insetGrouped).scrollContentBackground(.hidden).background(CreationDesign.canvas)
@@ -4390,15 +4176,79 @@ private struct AdminBackupsView: View {
     }
 }
 
+/// Public site identity survives view recreation and app relaunch. Private
+/// dashboard data remains in this authenticated client's memory only.
+@MainActor
+final class AdminSiteOverviewModel: ObservableObject {
+    struct Identity: Codable, Equatable {
+        var name: String
+        var description: String
+        var logo: String
+    }
+    @Published private(set) var identity: Identity
+    @Published private(set) var dashboard: AdminDashboard?
+    @Published private(set) var loading = false
+    @Published private(set) var error: String?
+    private unowned let api: AdminAPIClient
+    private let defaults: UserDefaults
+    private let key: String
+    private var loadedIdentity = false
+    private var statisticsDate: Date?
+
+    init(api: AdminAPIClient, defaults: UserDefaults = .standard) {
+        self.api = api; self.defaults = defaults
+        key = "yezi.public-site-identity.v1." + api.siteRoot.absoluteString
+        identity = defaults.data(forKey: key).flatMap { try? JSONDecoder().decode(Identity.self, from: $0) }
+            ?? Identity(name: api.siteRoot.host ?? "我的小站", description: api.siteRoot.host ?? "", logo: "")
+    }
+    func apply(settings: [String: String]) {
+        let next = Identity(name: settings["site_name"].map { $0.trimmedNonEmpty ?? api.siteRoot.host ?? "我的小站" } ?? identity.name,
+                            description: settings["site_description"].map { $0.trimmedNonEmpty ?? api.siteRoot.host ?? "" } ?? identity.description,
+                            logo: settings["site_logo"] ?? identity.logo)
+        if identity != next {
+            identity = next
+            if let data = try? JSONEncoder().encode(next) { defaults.set(data, forKey: key) }
+        }
+        loadedIdentity = true
+    }
+    func apply(dashboard: AdminDashboard) { self.dashboard = dashboard; statisticsDate = Date() }
+    func invalidateStatistics() { statisticsDate = nil }
+    func clearPrivateData() { dashboard = nil; statisticsDate = nil; loadedIdentity = false }
+    func load(force: Bool = false) async {
+        guard !loading else { return }
+        let needsIdentity = force || !loadedIdentity
+        let needsStatistics = force || statisticsDate.map { Date().timeIntervalSince($0) >= 30 } != false
+        guard needsIdentity || needsStatistics else { return }
+        loading = true; error = nil
+        defer { loading = false }
+        // Keep the last successful values visible while independently refreshing.
+        async let identityResult: Void = loadIdentity(needed: needsIdentity, force: force)
+        async let statisticsResult: Void = loadStatistics(needed: needsStatistics, force: force)
+        _ = await (identityResult, statisticsResult)
+    }
+    private func loadIdentity(needed: Bool, force: Bool) async {
+        guard needed else { return }
+        do { _ = try await api.fetchSettings(reuseLoaded: !force) }
+        catch { if !isRequestCancellation(error) { self.error = error.localizedDescription } }
+    }
+    private func loadStatistics(needed: Bool, force: Bool) async {
+        guard needed else { return }
+        do { _ = try await api.fetchDashboard(reuseLoaded: !force && dashboard == nil) }
+        catch { if !isRequestCancellation(error) { self.error = error.localizedDescription } }
+    }
+}
+
 private struct AdminMoreView: View {
     @ObservedObject var session: AdminSessionModel
     @State private var confirmingLogout = false
     @State private var previewRoute: AdminManagementRoute?
-    @State private var dashboard: AdminDashboard?
-    @State private var siteName = "我的小站"
-    @State private var siteDescription = ""
-    @State private var loadedIdentity = false
+    @ObservedObject private var overview: AdminSiteOverviewModel
     @State private var showingWebsite = false
+
+    init(session: AdminSessionModel) {
+        self.session = session
+        _overview = ObservedObject(wrappedValue: session.api.siteOverview)
+    }
 
     var body: some View {
         List {
@@ -4406,26 +4256,27 @@ private struct AdminMoreView: View {
                 VStack(spacing: 16) {
                 Button { showingWebsite = true } label: {
                 HStack(spacing: 16) {
-                    Image(systemName: "leaf").font(.system(size: 36, weight: .ultraLight))
-                        .frame(width: 52, height: 62)
+                    if !overview.identity.logo.isEmpty {
+                        AdminImageView(rawURL: overview.identity.logo, siteRoot: session.api.siteRoot, size: CGSize(width: 52, height: 52), cornerRadius: 12, placeholderSymbol: "globe")
+                    } else {
+                        Image(systemName: "globe").font(.system(size: 32, weight: .light)).frame(width: 52, height: 52)
+                    }
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(siteName).font(.title2.weight(.semibold))
-                        Text(siteDescription).font(.caption).foregroundStyle(CreationDesign.secondary).lineLimit(2)
+                        Text(overview.identity.name).font(CreationDesign.interface(.title2).weight(.semibold))
+                        Text(overview.identity.description).font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.secondary).lineLimit(2)
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                    Image(systemName: "chevron.right").font(.subheadline.weight(.medium)).foregroundStyle(.secondary).frame(width: 20, height: 44)
+                    Image(systemName: "chevron.right").font(CreationDesign.interface(.subheadline).weight(.medium)).foregroundStyle(.secondary).frame(width: 20, height: 44)
                 }.foregroundStyle(CreationDesign.foreground)
                     .contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel("在 App 内预览网站")
-                if let dashboard {
                     Divider()
                     HStack(spacing: 0) {
-                        statistic("文章", value: dashboard.posts?.total)
+                        statistic("随笔", value: overview.dashboard?.posts?.total)
                         Divider()
-                        statistic("絮语", value: dashboard.moments)
+                        statistic("絮语", value: overview.dashboard?.moments)
                         Divider()
-                        statistic("文件", value: dashboard.attachments)
+                        statistic("文件", value: overview.dashboard?.attachments)
                     }.frame(minHeight: 56).fixedSize(horizontal: false, vertical: true)
-                }
                 }.padding(.vertical, 4).listRowSeparator(.hidden).listRowBackground(CreationDesign.surface)
             }
                 AdminMoreGroup(title: "内容") {
@@ -4436,6 +4287,7 @@ private struct AdminMoreView: View {
                 }
                 AdminMoreGroup(title: "站点") {
                     AdminMoreNavigationRow(title: "基础信息", subtitle: "", symbol: "gearshape") { AdminSettingsView(session: session, section: .site) }
+                    AdminMoreNavigationRow(title: "通知", subtitle: "", symbol: "bell.badge") { AdminNotificationSettingsView() }
                     AdminMoreNavigationRow(title: "音乐", subtitle: "", symbol: "music.note") { AdminSettingsView(session: session, section: .music) }
                     AdminMoreNavigationRow(title: "外观", subtitle: "", symbol: "paintpalette") { AdminSettingsView(session: session, section: .appearance) }
                     AdminMoreNavigationRow(title: "GitHub 更新", subtitle: "", symbol: "arrow.triangle.2.circlepath") { AdminDeploymentView(session: session) }
@@ -4444,10 +4296,10 @@ private struct AdminMoreView: View {
                     AdminMoreNavigationRow(title: "关于页面", subtitle: "", symbol: "person.text.rectangle") { AdminAboutManagementView(session: session) }
                 }
                 AdminMoreGroup(title: "站点与账号") {
-                    AdminMoreNavigationRow(title: "站点概览", subtitle: "统计与最近发布", symbol: "chart.bar.xaxis") { AdminDashboardView(session: session) }
-                    Button { confirmingLogout = true } label: { Label("退出登录 / 切换站点", systemImage: "rectangle.portrait.and.arrow.right").font(.subheadline).frame(maxWidth: .infinity, minHeight: 56).contentShape(Rectangle()) }.foregroundStyle(CreationDesign.secondary)
+                    Button { confirmingLogout = true } label: { Label("退出登录 / 切换站点", systemImage: "rectangle.portrait.and.arrow.right").font(CreationDesign.interface(.subheadline)).frame(maxWidth: .infinity, minHeight: 56).contentShape(Rectangle()) }.foregroundStyle(CreationDesign.secondary)
                 }
-        }.listStyle(.insetGrouped).scrollContentBackground(.hidden).background(CreationDesign.canvas).navigationTitle("管理").toolbar(.visible, for: .navigationBar)
+        }.listStyle(.insetGrouped).scrollContentBackground(.hidden).background(CreationDesign.canvas).toolbar(.hidden, for: .navigationBar)
+            .refreshable { await overview.load(force: true) }
             .sheet(isPresented: $showingWebsite) { AdminInAppBrowserView(url: session.api.siteRoot).ignoresSafeArea() }
             .confirmationDialog("退出当前站点？", isPresented: $confirmingLogout) {
                 Button("退出登录", role: .destructive) { Task { await session.logout() } }
@@ -4467,29 +4319,18 @@ private struct AdminMoreView: View {
                     case .referenceCache: AdminReferenceCacheView(session: session)
                     case .referenceReader: AdminReferenceReaderView(referenceID: 701, api: session.api)
                     case .about: AdminAboutManagementView(session: session)
-                    case .overview: AdminDashboardView(session: session)
                     }
                 }.adminNativeSwipeBack()
             }
             .task {
-                guard !loadedIdentity else { return }
-                // Two requests only on first entry; returning from a setting does not refetch the dashboard.
-                async let settings = try? session.api.fetchSettings()
-                async let summary = try? session.api.fetchDashboard()
-                let values = await settings
-                let overview = await summary
-                guard !Task.isCancelled else { return }
-                siteName = values?["site_name"]?.trimmedNonEmpty ?? "我的小站"
-                siteDescription = values?["site_description"]?.trimmedNonEmpty ?? session.api.siteRoot.host ?? ""
-                dashboard = overview
-                loadedIdentity = true
+                await overview.load()
                 if CreationPreview.isEnabled { previewRoute = AdminManagementRoute(previewScreen: CreationPreview.screen) }
             }
     }
     private func statistic(_ title: String, value: Int?) -> some View {
         VStack(spacing: 5) {
-            Text(title).font(.caption).foregroundStyle(CreationDesign.secondary)
-            Text(value.map(String.init) ?? "—").font(.title2.weight(.semibold)).monospacedDigit().foregroundStyle(CreationDesign.foreground)
+            Text(title).font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.secondary)
+            Text(value.map(String.init) ?? "—").font(CreationDesign.interface(.title2).weight(.semibold)).monospacedDigit().foregroundStyle(CreationDesign.foreground)
         }.frame(maxWidth: .infinity)
     }
 }
@@ -4527,15 +4368,15 @@ private struct AdminMoreNavigationRow<Destination: View>: View {
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: symbol)
-                    .font(.system(size: 16, weight: .medium))
+                    .font(CreationDesign.interface(size: 16, weight: .medium))
                     .foregroundStyle(AdminDesign.foreground)
                     .frame(width: 28, height: 32)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.body.weight(.medium))
+                        .font(CreationDesign.interface(.body).weight(.medium))
                         .foregroundStyle(AdminDesign.foreground)
                     if !subtitle.isEmpty {
-                        Text(subtitle).font(.caption).foregroundStyle(AdminDesign.muted).lineLimit(1)
+                        Text(subtitle).font(CreationDesign.interface(.caption)).foregroundStyle(AdminDesign.muted).lineLimit(1)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -4563,7 +4404,7 @@ private struct AdminDeploymentView: View {
             VStack(alignment: .leading, spacing: 12) {
                 AdminPreviewHeader(overline: "DEPLOYMENT STATUS", title: "GitHub 更新", subtitle: "检查版本、同步代码与查看运行状态") {
                     Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 17, weight: .medium))
+                        .font(CreationDesign.interface(size: 17, weight: .medium))
                         .foregroundStyle(AdminDesign.accent)
                         .frame(width: 38, height: 38)
                         .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -4575,7 +4416,7 @@ private struct AdminDeploymentView: View {
                 }
                 if let message {
                     Label(message, systemImage: isSyncing ? "arrow.triangle.2.circlepath" : "checkmark.circle.fill")
-                        .font(.subheadline.weight(.medium))
+                        .font(CreationDesign.interface(.subheadline).weight(.medium))
                         .foregroundStyle(isSyncing ? AdminDesign.warning : AdminDesign.accent)
                         .transition(.opacity)
                         .animation(.easeInOut(duration: 0.2), value: message)
@@ -4584,7 +4425,7 @@ private struct AdminDeploymentView: View {
                 AdminSettingsCard(title: "版本状态", subtitle: "检查当前站点与 GitHub 的版本") {
                     HStack {
                         Text(versionTitle)
-                            .font(.headline)
+                            .font(CreationDesign.interface(.headline))
                             .foregroundStyle(versionStatusColor)
                         Spacer()
                         Button {
@@ -4610,7 +4451,7 @@ private struct AdminDeploymentView: View {
                         }
                         if let error = version.error?.trimmedNonEmpty {
                             Text(error)
-                                .font(.caption)
+                                .font(CreationDesign.interface(.caption))
                                 .foregroundStyle(AdminDesign.muted)
                                 .lineLimit(3)
                         }
@@ -4620,12 +4461,12 @@ private struct AdminDeploymentView: View {
                 AdminSettingsCard(title: "部署状态", subtitle: "同步更新后，自动检查网站是否正常运行") {
                     HStack {
                         Text(statusTitle)
-                            .font(.headline)
+                            .font(CreationDesign.interface(.headline))
                             .foregroundStyle(statusColor)
                         Spacer()
                         if let updatedAt = status?.updatedAt {
                             Text(AdminFormatters.displayDate(updatedAt))
-                                .font(.caption)
+                                .font(CreationDesign.time())
                                 .foregroundStyle(AdminDesign.muted)
                         }
                     }
@@ -4636,7 +4477,7 @@ private struct AdminDeploymentView: View {
                     }
                     if let error = status?.error?.trimmedNonEmpty {
                         Text(error)
-                            .font(.caption)
+                            .font(CreationDesign.interface(.caption))
                             .foregroundStyle(AdminDesign.danger)
                             .lineLimit(3)
                     }
@@ -4650,7 +4491,7 @@ private struct AdminDeploymentView: View {
                                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             }
                         }
-                        .font(.system(size: 11, weight: .medium))
+                        .font(CreationDesign.interface(size: 11, weight: .medium))
                         .foregroundStyle(AdminDesign.muted)
                     }
                     HStack(spacing: 8) {
@@ -4902,6 +4743,7 @@ private struct AdminAboutManagementView: View {
     @ObservedObject var session: AdminSessionModel
     @StateObject private var model: AdminSettingsModel
     @State private var selectedImageItem: PhotosPickerItem?
+    @State private var showingPhotos = false
     @State private var showingMusicSheet = false
     @State private var showingVideoSheet = false
     @State private var showingPreview = false
@@ -4917,7 +4759,6 @@ private struct AdminAboutManagementView: View {
     }
 
     var body: some View {
-        let uploading = isUploadingImage
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 AdminPreviewHeader(overline: "ABOUT PAGE", title: "关于页面", subtitle: "把你的故事，介绍给来到这里的人。") {
@@ -4930,24 +4771,16 @@ private struct AdminAboutManagementView: View {
                 }
                 if let successMessage = model.successMessage {
                     Label(successMessage, systemImage: "checkmark.circle.fill")
-                        .font(.subheadline)
+                        .font(CreationDesign.interface(.subheadline))
                         .foregroundStyle(AdminDesign.accent)
                 }
 
                 if model.isLoading && !model.hasLoaded { ProgressView("正在读取关于页面…").frame(maxWidth: .infinity, minHeight: 180) }
                 else {
-                    AdminSettingsCard(title: "正文", subtitle: "支持 Markdown，选中文字即可排版。") {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 10) {
-                                PhotosPicker(selection: $selectedImageItem, matching: .images) { Label(uploading ? "上传中…" : "图片", systemImage: "photo") }.disabled(isUploadingImage)
-                                Button { focused = false; showingMusicSheet = true } label: { Label("音乐", systemImage: "music.note") }
-                                Button { focused = false; showingVideoSheet = true } label: { Label("视频", systemImage: "video") }
-                                Button { focused = false; showingReferencePicker = true } label: { Label("引用", systemImage: "link") }
-                            }.buttonStyle(AdminSmallActionButtonStyle())
-                        }
+                    AdminSettingsCard(title: "正文") {
                         ZStack(alignment: .topLeading) {
-                            if model.value("about_content").isEmpty {
-                                Text("写下你的介绍、联系方式和站点说明…").font(.body).foregroundStyle(CreationDesign.secondary).padding(.top, 12).allowsHitTesting(false)
+                            if model.value("about_content").isEmpty && !focused {
+                                Text("写下你的介绍、联系方式和站点说明…").font(CreationDesign.interface(.body)).foregroundStyle(CreationDesign.secondary).padding(.top, 12).allowsHitTesting(false)
                             }
                             MarkdownWritingView(text: Binding(get: { model.value("about_content") }, set: { model.set("about_content", $0) }), focused: $focused, controller: writing, editable: model.hasLoaded && !model.isSaving, label: "关于页面正文", minimumHeight: 320)
                         }
@@ -4968,13 +4801,13 @@ private struct AdminAboutManagementView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if model.hasLoaded {
-                    HStack(spacing: 0) {
-                        MarkdownFormatBar(controller: writing).disabled(model.isSaving)
-                        if focused {
-                            Button { focused = false } label: { Image(systemName: "keyboard.chevron.compact.down").frame(width: 44, height: 44) }
-                                .accessibilityLabel("收起键盘")
-                        }
-                    }.background(CreationDesign.soft)
+                    CreationEditorialToolbar(controller: writing, idPrefix: "about.tool",
+                        image: { focused = false; showingPhotos = true },
+                        video: { focused = false; showingVideoSheet = true },
+                        music: { focused = false; showingMusicSheet = true },
+                        preview: { focused = false; showingPreview = true },
+                        reference: { focused = false; showingReferencePicker = true })
+                        .disabled(model.isSaving || isUploadingImage)
                 }
                 CreationSaveBar(title: "保存页面", message: model.hasChanges ? "有未保存的修改" : "保存后更新网站关于页面", isSaving: model.isSaving, canSave: model.hasChanges && !isUploadingImage) {
                     focused = false
@@ -4982,6 +4815,8 @@ private struct AdminAboutManagementView: View {
                 }
             }
         }
+        .preference(key: CreationMiniPlayerHiddenKey.self, value: true)
+        .photosPicker(isPresented: $showingPhotos, selection: $selectedImageItem, matching: .images)
         .onChange(of: selectedImageItem) { _, item in
             guard let item else { return }
             Task { @MainActor in
@@ -5085,7 +4920,7 @@ private final class AdminReferenceManagementModel: ObservableObject {
         return items.count >= page * limit
     }
 
-    func load(query: String = "") async {
+    func load(query: String = "", reuseLoaded: Bool = false) async {
         requestSerial += 1
         let requestID = requestSerial
         isLoading = true
@@ -5094,7 +4929,9 @@ private final class AdminReferenceManagementModel: ObservableObject {
             if requestID == requestSerial { isLoading = false }
         }
         do {
-            let page = try await api.fetchReferenceLibrary(page: 1, limit: 50, query: query)
+            if !reuseLoaded { await api.discardLoadedData(for: ["references"]) }
+            guard requestID == requestSerial, !Task.isCancelled else { return }
+            let page = try await api.fetchReferenceLibrary(page: 1, limit: 50, query: query, reuseLoaded: reuseLoaded)
             guard requestID == requestSerial else { return }
             items = page.items
             meta = page.meta
@@ -5122,7 +4959,7 @@ private final class AdminReferenceManagementModel: ObservableObject {
         isLoadingMore = true
         defer { isLoadingMore = false }
         do {
-            let next = try await api.fetchReferenceLibrary(page: page + 1, limit: limit, query: query)
+            let next = try await api.fetchReferenceLibrary(page: page + 1, limit: limit, query: query, reuseLoaded: true)
             guard requestID == requestSerial else { return }
             items.append(contentsOf: next.items)
             meta = next.meta
@@ -5251,7 +5088,7 @@ private struct AdminReferenceManagementView: View {
                                 if model.isLoadingMore { ProgressView().controlSize(.small) }
                                 else { Image(systemName: "chevron.down") }
                             }
-                            .font(.system(size: 12, weight: .medium))
+                            .font(CreationDesign.interface(size: 12, weight: .medium))
                             .foregroundStyle(AdminDesign.accent)
                             .padding(13)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -5337,14 +5174,14 @@ private struct AdminReferenceTabs: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("引用 \(index + 1)")
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(CreationDesign.interface(size: 10, weight: .semibold))
                                 .foregroundStyle(selection == reference.identity ? AdminDesign.accent : AdminDesign.muted)
                             Text(reference.displayTitle)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(CreationDesign.interface(size: 12, weight: .medium))
                                 .foregroundStyle(AdminDesign.foreground)
                                 .lineLimit(2)
                             Text(reference.sourceName?.trimmedNonEmpty ?? "网页文章")
-                                .font(.system(size: 10))
+                                .font(CreationDesign.interface(size: 10))
                                 .foregroundStyle(AdminDesign.muted)
                                 .lineLimit(1)
                         }
@@ -5393,7 +5230,7 @@ private struct AdminReferenceCacheView: View {
             VStack(alignment: .leading, spacing: 12) {
                 AdminPreviewHeader(overline: "READING CACHE", title: "阅读缓存", subtitle: "已保存的引用正文、摘要和缓存报告") {
                     Image(systemName: "internaldrive")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(CreationDesign.interface(size: 16, weight: .semibold))
                         .foregroundStyle(AdminDesign.accent)
                         .frame(width: 38, height: 38)
                         .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -5414,7 +5251,7 @@ private struct AdminReferenceCacheView: View {
                         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(AdminDesign.border, lineWidth: 1))
                 } else {
                     Text("共 \(cachedItems.count) 个缓存")
-                        .font(.subheadline)
+                        .font(CreationDesign.interface(.subheadline))
                         .foregroundStyle(AdminDesign.muted)
                     AdminReferenceTabs(items: cachedItems, selection: $selectedReferenceIdentity)
 
@@ -5460,15 +5297,15 @@ private struct AdminReferenceCacheDetail: View {
                 AdminImageView(rawURL: reference.coverURL, siteRoot: api.siteRoot, size: CGSize(width: 64, height: 64), cornerRadius: 13)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(reference.displayTitle)
-                        .font(.headline)
+                        .font(CreationDesign.interface(.headline))
                         .foregroundStyle(AdminDesign.foreground)
                     Text([reference.sourceName, reference.author].compactMap { $0?.trimmedNonEmpty }.joined(separator: " · "))
-                        .font(.caption)
+                        .font(CreationDesign.interface(.caption))
                         .foregroundStyle(AdminDesign.muted)
                         .lineLimit(2)
                     if let cachedAt = reference.archiveUpdatedAt ?? reference.archiveCapturedAt {
                         Text("缓存于 \(AdminFormatters.displayDate(cachedAt))")
-                            .font(.caption)
+                            .font(CreationDesign.time())
                             .foregroundStyle(AdminDesign.accent)
                     }
                 }
@@ -5493,10 +5330,10 @@ private struct AdminReferenceCacheDetail: View {
             if let summary = reference.summary?.trimmedNonEmpty {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("AI 摘要")
-                        .font(.subheadline.weight(.semibold))
+                        .font(CreationDesign.interface(.subheadline).weight(.semibold))
                         .foregroundStyle(AdminDesign.accent)
                     Text(summary)
-                        .font(.body)
+                        .font(CreationDesign.interface(.body))
                         .foregroundStyle(AdminDesign.foreground)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -5508,11 +5345,11 @@ private struct AdminReferenceCacheDetail: View {
             if let keyPoints = reference.keyPoints, !keyPoints.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("要点")
-                        .font(.subheadline.weight(.semibold))
+                        .font(CreationDesign.interface(.subheadline).weight(.semibold))
                         .foregroundStyle(AdminDesign.muted)
                     ForEach(Array(keyPoints.prefix(6).enumerated()), id: \.offset) { _, point in
                         Text("• \(point)")
-                            .font(.body)
+                            .font(CreationDesign.interface(.body))
                             .foregroundStyle(AdminDesign.foreground)
                     }
                 }
@@ -5520,7 +5357,7 @@ private struct AdminReferenceCacheDetail: View {
 
             if let description = reference.description?.trimmedNonEmpty {
                 Text(description)
-                    .font(.subheadline)
+                    .font(CreationDesign.interface(.subheadline))
                     .foregroundStyle(AdminDesign.muted)
                     .lineLimit(5)
             }
@@ -5528,7 +5365,7 @@ private struct AdminReferenceCacheDetail: View {
             if let url = reference.url.flatMap(URL.init(string:)) {
                 Link(destination: url) {
                     Label("打开原文", systemImage: "arrow.up.right")
-                        .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                        .font(CreationDesign.interface(.subheadline).weight(.medium)).frame(minHeight: 44)
                 }
                 .tint(AdminDesign.accent)
             }
@@ -5576,14 +5413,14 @@ private struct AdminReferenceReaderView: View {
                         subtitle: "保存的参考文章，随时静心阅读。"
                     ) {
                         Image(systemName: "book.pages")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(CreationDesign.interface(size: 16, weight: .semibold))
                             .foregroundStyle(AdminDesign.accent)
                             .frame(width: 38, height: 38)
                             .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(AdminDesign.border, lineWidth: 1))
                     }
 
-                    Text(reader.title?.trimmedNonEmpty ?? "参考文章").font(CreationDesign.editorial(30, relativeTo: .title, bold: true)).foregroundStyle(AdminDesign.foreground)
+                    Text(reader.title?.trimmedNonEmpty ?? "参考文章").font(CreationDesign.contentTitle(30, relativeTo: .title, bold: true)).foregroundStyle(AdminDesign.foreground)
 
                     VStack(alignment: .leading, spacing: 5) {
                         let source = [reader.sourceName, reader.author, reader.publishedAt]
@@ -5591,12 +5428,12 @@ private struct AdminReferenceReaderView: View {
                             .joined(separator: " · ")
                         if !source.isEmpty {
                             Text(source)
-                                .font(.subheadline)
+                                .font(CreationDesign.interface(.subheadline))
                                 .foregroundStyle(AdminDesign.accent)
                         }
                         if let updatedAt = reader.updatedAt ?? reader.capturedAt {
                             Text("缓存更新于 \(AdminFormatters.displayDate(updatedAt))")
-                                .font(.caption)
+                                .font(CreationDesign.time())
                                 .foregroundStyle(AdminDesign.muted)
                         }
                     }
@@ -5604,10 +5441,10 @@ private struct AdminReferenceReaderView: View {
                     if let summary = reader.summary?.trimmedNonEmpty {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("AI 摘要")
-                                .font(.subheadline.weight(.semibold))
+                                .font(CreationDesign.interface(.subheadline).weight(.semibold))
                                 .foregroundStyle(AdminDesign.accent)
                             Text(summary)
-                                .font(.body)
+                                .font(CreationDesign.interface(.body))
                                 .foregroundStyle(AdminDesign.foreground)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -5619,11 +5456,11 @@ private struct AdminReferenceReaderView: View {
                     if let points = reader.keyPoints, !points.isEmpty {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("要点")
-                                .font(.subheadline.weight(.semibold))
+                                .font(CreationDesign.interface(.subheadline).weight(.semibold))
                                 .foregroundStyle(AdminDesign.muted)
                             ForEach(Array(points.prefix(6).enumerated()), id: \.offset) { _, point in
                                 Text("• \(point)")
-                                    .font(.body)
+                                    .font(CreationDesign.interface(.body))
                                     .foregroundStyle(AdminDesign.foreground)
                             }
                         }
@@ -5716,11 +5553,11 @@ private struct AdminReferenceManagementRow: View {
                 AdminImageView(rawURL: reference.coverURL, siteRoot: api.siteRoot, size: CGSize(width: 54, height: 64), cornerRadius: 14)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(reference.displayTitle)
-                        .font(.headline)
+                        .font(CreationDesign.interface(.headline))
                         .foregroundStyle(AdminDesign.foreground)
                         .lineLimit(2)
                     Text([reference.sourceName, reference.author, AdminFormatters.displayDate(reference.updatedAt)].compactMap { $0?.trimmedNonEmpty }.joined(separator: " · "))
-                        .font(.caption)
+                        .font(CreationDesign.time())
                         .foregroundStyle(AdminDesign.muted)
                         .lineLimit(2)
                 }
@@ -5773,20 +5610,20 @@ private struct AdminReferenceManagementRow: View {
             if let linkedPostTitles = reference.linkedPostTitles?.trimmedNonEmpty,
                !linkedPostTitles.isEmpty {
                 Text("关联文章：\(linkedPostTitles)")
-                    .font(.caption)
+                    .font(CreationDesign.interface(.caption))
                     .foregroundStyle(AdminDesign.muted)
                     .lineLimit(2)
             }
 
             if !summary.isEmpty {
                 Text(summary)
-                    .font(.body)
+                    .font(CreationDesign.interface(.body))
                     .foregroundStyle(AdminDesign.foreground)
                     .lineLimit(3)
             }
             if !keyPoints.isEmpty {
                 Text(keyPoints.prefix(3).map { "• \($0)" }.joined(separator: "  "))
-                    .font(.subheadline)
+                    .font(CreationDesign.interface(.subheadline))
                     .foregroundStyle(AdminDesign.muted)
                     .lineLimit(2)
             }
@@ -5810,26 +5647,26 @@ private struct AdminReferenceManagementRow: View {
                 Spacer(minLength: 0)
                 if reference.id != nil {
                     Button(action: onToggleSelection) {
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle").font(.title3)
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle").font(CreationDesign.interface(.title3))
                             .foregroundStyle(isSelected ? AdminDesign.accent : AdminDesign.muted).frame(width: 44, height: 44)
                     }.buttonStyle(.plain).accessibilityLabel(isSelected ? "取消选择此引用" : "选择此引用").accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
-            if isSummarizing || isCaching { ProgressView(isCaching ? "正在更新阅读缓存…" : "正在生成摘要…").font(.caption) }
+            if isSummarizing || isCaching { ProgressView(isCaching ? "正在更新阅读缓存…" : "正在生成摘要…").font(CreationDesign.interface(.caption)) }
 
             if let cachedAt {
                 Text("阅读缓存更新时间：\(AdminFormatters.displayDate(cachedAt))")
-                    .font(.caption)
+                    .font(CreationDesign.time())
                     .foregroundStyle(AdminDesign.muted)
             }
             if let message, !message.isEmpty {
                 Text(message)
-                    .font(.subheadline)
+                    .font(CreationDesign.interface(.subheadline))
                     .foregroundStyle(AdminDesign.accent)
             }
             if let errorMessage, !errorMessage.isEmpty {
                 Text(errorMessage)
-                    .font(.subheadline)
+                    .font(CreationDesign.interface(.subheadline))
                     .foregroundStyle(AdminDesign.danger)
                     .lineLimit(2)
             }
@@ -5930,7 +5767,7 @@ private struct AdminReferenceMetadataSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    AdminSettingsCard(title: "引用资料", subtitle: reference.sourceName ?? "参考文章") { Text(reference.displayTitle).font(.headline) }
+                    AdminSettingsCard(title: "引用资料", subtitle: reference.sourceName ?? "参考文章") { Text(reference.displayTitle).font(CreationDesign.interface(.headline)) }
                     AdminSettingsCard(title: "分类与标签", subtitle: "用分类整理主题，用标签记录关键词。") {
                         AdminSettingsField(label: "分类", placeholder: "例如：设计与生活", text: $category)
                         AdminSettingsField(label: "标签", placeholder: "多个标签用逗号分隔", text: $tags)
@@ -5967,7 +5804,7 @@ private struct AdminReferenceStatusBadge: View {
 
     var body: some View {
         Label(title, systemImage: symbol)
-            .font(.caption)
+            .font(CreationDesign.interface(.caption))
             .foregroundStyle(AdminDesign.muted)
             .padding(.horizontal, 7)
             .padding(.vertical, 5)
@@ -6064,7 +5901,7 @@ private struct AdminMomentsView: View {
                 AdminPreviewHeader(overline: "IDEAS", title: "想法", subtitle: "共 \(model.total) 个想法") {
                     Button { creating = true } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(CreationDesign.interface(size: 16, weight: .semibold))
                             .foregroundStyle(AdminDesign.accent)
                             .frame(width: 38, height: 38)
                             .background(AdminDesign.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -6092,22 +5929,22 @@ private struct AdminMomentsView: View {
                             Button { editor = item } label: {
                                 HStack(spacing: 12) {
                                     Image(systemName: "quote.bubble")
-                                        .font(.system(size: 17, weight: .medium))
+                                        .font(CreationDesign.interface(size: 17, weight: .medium))
                                         .foregroundStyle(AdminDesign.accent)
                                         .frame(width: 38, height: 38)
                                         .background(AdminDesign.accentSoft, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                                     VStack(alignment: .leading, spacing: 5) {
                                         Text(item.content.replacingOccurrences(of: "\n", with: " "))
-                                            .font(.system(size: 13, weight: .medium))
+                                            .font(CreationDesign.interface(size: 13, weight: .medium))
                                             .foregroundStyle(AdminDesign.foreground)
                                             .lineLimit(3)
                                         Text("\(AdminFormatters.displayDate(item.updatedAt ?? item.createdAt)) · \(item.images.count) 张图片")
-                                            .font(.system(size: 11))
+                                            .font(CreationDesign.interface(size: 11))
                                             .foregroundStyle(AdminDesign.muted)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     Image(systemName: "chevron.right")
-                                        .font(.system(size: 11, weight: .semibold))
+                                        .font(CreationDesign.interface(size: 11, weight: .semibold))
                                         .foregroundStyle(AdminDesign.muted)
                                 }
                                 .padding(.horizontal, 14)
@@ -6209,7 +6046,7 @@ private final class AdminWorksModel: ObservableObject {
 
     init(api: AdminAPIClient) { self.api = api }
 
-    func load() async {
+    func load(reuseLoaded: Bool = false) async {
         requestSerial += 1
         let requestID = requestSerial
         isLoading = true
@@ -6218,7 +6055,9 @@ private final class AdminWorksModel: ObservableObject {
             if requestID == requestSerial { isLoading = false }
         }
         do {
-            let page = try await api.fetchWorks(page: 1, limit: 20)
+            if !reuseLoaded { await api.discardLoadedData(for: ["works"]) }
+            guard requestID == requestSerial, !Task.isCancelled else { return }
+            let page = try await api.fetchWorks(page: 1, limit: 20, reuseLoaded: reuseLoaded)
             guard requestID == requestSerial else { return }
             items = page.items
             meta = page.meta
@@ -6247,7 +6086,7 @@ private final class AdminWorksModel: ObservableObject {
         isLoadingMore = true
         defer { isLoadingMore = false }
         do {
-            let next = try await api.fetchWorks(page: page + 1, limit: limit)
+            let next = try await api.fetchWorks(page: page + 1, limit: limit, reuseLoaded: true)
             guard requestID == requestSerial else { return }
             items.append(contentsOf: next.items)
             meta = next.meta
@@ -6283,7 +6122,7 @@ private struct AdminWorksView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
                 AdminPreviewHeader(overline: "WORKS", title: "作品", subtitle: "共 \(model.total) 个作品") {
-                    Image(systemName: "briefcase").font(.title2).foregroundStyle(CreationDesign.accent)
+                    Image(systemName: "briefcase").font(CreationDesign.interface(.title2)).foregroundStyle(CreationDesign.accent)
                 }
 
                 if let errorMessage = model.errorMessage {
@@ -6308,11 +6147,11 @@ private struct AdminWorksView: View {
                                     AdminImageView(rawURL: item.cover, siteRoot: session.api.siteRoot, size: CGSize(width: 64, height: 76), cornerRadius: 16)
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(item.title)
-                                            .font(.headline)
+                                            .font(CreationDesign.interface(.headline))
                                             .foregroundStyle(AdminDesign.foreground)
                                             .lineLimit(2)
                                         Text(item.description)
-                                            .font(.subheadline)
+                                            .font(CreationDesign.interface(.subheadline))
                                             .foregroundStyle(AdminDesign.muted)
                                             .lineLimit(2)
                                     }
@@ -6479,14 +6318,15 @@ private final class AdminTaxonomyModel: ObservableObject {
 
     init(api: AdminAPIClient) { self.api = api }
 
-    func load() async {
+    func load(reuseLoaded: Bool = false) async {
         guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
-            categories = try await api.fetchCategories().items
-            tags = try await api.fetchTags().items
+            if !reuseLoaded { await api.discardLoadedData(for: ["categories", "tags"]) }
+            categories = try await api.fetchCategories(reuseLoaded: reuseLoaded).items
+            tags = try await api.fetchTags(reuseLoaded: reuseLoaded).items
         } catch {
             if !isAdminRequestCancellation(error) { errorMessage = error.localizedDescription }
         }
@@ -6565,7 +6405,7 @@ private struct AdminTaxonomyView: View {
                 AdminSettingsCard(title: "分类", subtitle: "共 \(model.categories.count) 个分类") {
                     if model.categories.isEmpty {
                         Text("暂无分类")
-                            .font(.subheadline)
+                            .font(CreationDesign.interface(.subheadline))
                             .foregroundStyle(AdminDesign.muted)
                     } else {
                         ForEach(model.categories) { category in
@@ -6582,7 +6422,7 @@ private struct AdminTaxonomyView: View {
                 AdminSettingsCard(title: "标签", subtitle: "共 \(model.tags.count) 个标签") {
                     if model.tags.isEmpty {
                         Text("暂无标签")
-                            .font(.subheadline)
+                            .font(CreationDesign.interface(.subheadline))
                             .foregroundStyle(AdminDesign.muted)
                     } else {
                         ForEach(model.tags) { tag in
@@ -6662,8 +6502,8 @@ private struct AdminTaxonomyRow: View {
             Image(systemName: symbol).foregroundStyle(CreationDesign.accent)
                 .frame(width: 40, height: 44).background(CreationDesign.accentSoft, in: RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 5) {
-                Text(title).font(.body.weight(.medium)).foregroundStyle(CreationDesign.foreground)
-                Text(detail).font(.caption).foregroundStyle(CreationDesign.secondary)
+                Text(title).font(CreationDesign.interface(.body).weight(.medium)).foregroundStyle(CreationDesign.foreground)
+                Text(detail).font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
             Menu {
                 Button("编辑名称", systemImage: "pencil", action: onEdit)
@@ -6831,7 +6671,7 @@ private struct AdminPreviewHeader<Trailing: View>: View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 10) {
                 Text(title).font(CreationDesign.editorial(34, relativeTo: .largeTitle, bold: true)).foregroundStyle(CreationDesign.foreground)
-                if !subtitle.isEmpty { Text(subtitle).font(.subheadline).foregroundStyle(AdminDesign.muted) }
+                if !subtitle.isEmpty { Text(subtitle).font(CreationDesign.interface(.subheadline)).foregroundStyle(AdminDesign.muted) }
             }.frame(maxWidth: .infinity, alignment: .leading)
             trailing
         }.padding(.vertical, 10).padding(.bottom, 8).navigationTitle(title)
@@ -6881,12 +6721,12 @@ private struct AdminSectionTitle<Destination: View>: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title)
-                .font(.system(size: 16, weight: .semibold))
+                .font(CreationDesign.interface(size: 16, weight: .semibold))
                 .foregroundStyle(AdminDesign.foreground)
             Spacer()
             if let actionTitle, let destination {
                 NavigationLink(actionTitle) { destination.adminNativeSwipeBack() }
-                    .font(.system(size: 12, weight: .medium))
+                    .font(CreationDesign.interface(size: 12, weight: .medium))
                     .foregroundStyle(AdminDesign.accent)
             }
         }
@@ -6900,7 +6740,7 @@ private struct AdminStatusBadge: View {
 
     var body: some View {
         Text(label)
-            .font(.caption.weight(.medium))
+            .font(CreationDesign.interface(.caption).weight(.medium))
             .foregroundStyle(color)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -6944,7 +6784,7 @@ private struct AdminErrorBanner: View {
 
     var body: some View {
         Label(message, systemImage: "exclamationmark.triangle.fill")
-            .font(.subheadline)
+            .font(CreationDesign.interface(.subheadline))
             .foregroundStyle(AdminDesign.danger)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
@@ -6956,7 +6796,7 @@ private struct AdminSmallActionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.subheadline.weight(.medium))
+            .font(CreationDesign.interface(.subheadline).weight(.medium))
             .foregroundStyle(AdminDesign.accent)
             .padding(.horizontal, 14)
             .frame(minHeight: 44)
@@ -6973,13 +6813,13 @@ private struct AdminEmptyState: View {
     var body: some View {
         VStack(spacing: 9) {
             Image(systemName: systemImage)
-                .font(.system(size: 28))
+                .font(CreationDesign.interface(size: 28))
                 .foregroundStyle(AdminDesign.muted)
             Text(title)
-                .font(.headline)
+                .font(CreationDesign.interface(.headline))
                 .foregroundStyle(AdminDesign.foreground)
             Text(message)
-                .font(.subheadline)
+                .font(CreationDesign.interface(.subheadline))
                 .foregroundStyle(AdminDesign.muted)
                 .multilineTextAlignment(.center)
         }
@@ -6994,6 +6834,7 @@ private struct AdminImageView: View {
     let siteRoot: URL
     let size: CGSize
     let cornerRadius: CGFloat
+    var placeholderSymbol = "photo"
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
@@ -7013,7 +6854,7 @@ private struct AdminImageView: View {
     }
 
     private var placeholder: some View {
-        Image(systemName: "photo")
+        Image(systemName: placeholderSymbol)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

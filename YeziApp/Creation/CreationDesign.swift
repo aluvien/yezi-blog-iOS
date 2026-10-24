@@ -13,10 +13,42 @@ enum CreationDesign {
     static let border = color(0xD7D4C9, 0x49483F)
     static let danger = color(0xB64C4C, 0xF58282)
 
-    /// The system serif design does not consistently select a Chinese serif face.
-    /// Bundle Noto Serif SC so the face is available offline on every device.
+    static func interface(_ style: Font.TextStyle = .body, weight: Font.Weight = .regular) -> Font {
+        let size: CGFloat
+        switch style {
+        case .largeTitle: size = 34
+        case .title: size = 28
+        case .title2: size = 22
+        case .title3: size = 20
+        case .headline, .body: size = 17
+        case .callout: size = 16
+        case .subheadline: size = 15
+        case .footnote: size = 13
+        case .caption: size = 12
+        case .caption2: size = 11
+        @unknown default: size = 17
+        }
+        return interface(size: size, relativeTo: style, weight: weight)
+    }
+    static func interface(size: CGFloat, relativeTo style: Font.TextStyle = .body, weight: Font.Weight = .regular) -> Font {
+        .custom(weight == .bold || weight == .semibold || weight == .heavy ? "NotoSerifSC-SemiBold" : "NotoSerifSC-Regular", size: size, relativeTo: style)
+    }
+    static func time(_ style: Font.TextStyle = .caption) -> Font {
+        let size: CGFloat = style == .caption2 ? 11 : style == .footnote ? 13 : style == .subheadline ? 15 : style == .body ? 17 : 12
+        return copy(size, relativeTo: style)
+    }
     static func editorial(_ size: CGFloat, relativeTo style: Font.TextStyle = .title, bold: Bool = false) -> Font {
-        .custom("NotoSerifSC-ExtraLight", size: size, relativeTo: style).weight(bold ? .semibold : .regular)
+        interface(size: size, relativeTo: style, weight: bold ? .semibold : .regular)
+    }
+
+    static func contentTitle(_ size: CGFloat, relativeTo style: Font.TextStyle = .headline, bold: Bool = false) -> Font {
+        interface(size: size, relativeTo: style, weight: bold ? .semibold : .regular)
+    }
+    static func copy(_ size: CGFloat = 17, relativeTo style: Font.TextStyle = .body) -> Font {
+        .custom("LXGWWenKai-Regular", size: size, relativeTo: style)
+    }
+    static func writingFont(compatibleWith traits: UITraitCollection? = nil) -> UIFont {
+        UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: "LXGWWenKai-Regular", size: 17) ?? .systemFont(ofSize: 17), compatibleWith: traits)
     }
 
     private static func color(_ light: UInt32, _ dark: UInt32) -> Color {
@@ -59,9 +91,9 @@ struct CreationPageHeader<Trailing: View>: View {
             : AnyLayout(HStackLayout(alignment: .center, spacing: 16))
         layout {
             VStack(alignment: .leading, spacing: 7) {
-                Text(title).font(.largeTitle.bold())
+                Text(title).font(CreationDesign.interface(.largeTitle, weight: .bold))
                     .foregroundStyle(CreationDesign.foreground)
-                if !subtitle.isEmpty { Text(subtitle).font(.subheadline).foregroundStyle(CreationDesign.secondary) }
+                if !subtitle.isEmpty { Text(subtitle).font(CreationDesign.interface(.subheadline)).foregroundStyle(CreationDesign.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading)
             if #available(iOS 26.0, *) {
                 trailing.buttonStyle(.glass)
@@ -103,21 +135,121 @@ struct CreationHeaderIconFrame: ViewModifier {
     }
 }
 
+/// For content selectors only. Keep edge swipes available to navigation and
+/// ignore vertical scrolling or short accidental movements.
+struct CreationContentTabSwipe<Value: Equatable>: ViewModifier {
+    @Binding var selection: Value
+    let values: [Value]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(DragGesture(minimumDistance: 35).onEnded { value in
+            guard value.startLocation.x > 28,
+                  abs(value.translation.width) > 65,
+                  abs(value.translation.width) > abs(value.translation.height) * 1.5,
+                  let index = values.firstIndex(of: selection) else { return }
+            let next = index + (value.translation.width < 0 ? 1 : -1)
+            guard values.indices.contains(next) else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { selection = values[next] }
+        })
+    }
+}
+
+/// Instance-local font configuration keeps the native segmented control's
+/// selection, accessibility and appearance without a global UIKit override.
+struct CreationSegmentedPicker<Value: Equatable>: UIViewRepresentable {
+    @Binding var selection: Value
+    let values: [Value]
+    let titles: [String]
+    func makeCoordinator() -> CreationSegmentCoordinator { CreationSegmentCoordinator() }
+    func makeUIView(context: Context) -> UISegmentedControl {
+        let view = UISegmentedControl(items: titles)
+        view.addTarget(context.coordinator, action: #selector(CreationSegmentCoordinator.select(_:)), for: .valueChanged)
+        return view
+    }
+    func updateUIView(_ view: UISegmentedControl, context: Context) {
+        if view.numberOfSegments != titles.count {
+            view.removeAllSegments()
+            for (index, title) in titles.enumerated() { view.insertSegment(withTitle: title, at: index, animated: false) }
+        } else {
+            for (index, title) in titles.enumerated() where view.titleForSegment(at: index) != title { view.setTitle(title, forSegmentAt: index) }
+        }
+        let font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: UIFont(name: "NotoSerifSC-Regular", size: 14) ?? .preferredFont(forTextStyle: .subheadline), compatibleWith: view.traitCollection)
+        view.setTitleTextAttributes([.font: font], for: .normal)
+        view.setTitleTextAttributes([.font: font], for: .selected)
+        view.selectedSegmentIndex = values.firstIndex(of: selection) ?? UISegmentedControl.noSegment
+        context.coordinator.onSelect = { index in if values.indices.contains(index) { selection = values[index] } }
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UISegmentedControl, context: Context) -> CGSize? {
+        let lineHeight = (uiView.titleTextAttributes(for: .normal)?[.font] as? UIFont)?.lineHeight ?? 20
+        return CGSize(width: proposal.width ?? uiView.intrinsicContentSize.width, height: max(32, lineHeight + 12))
+    }
+}
+@MainActor
+final class CreationSegmentCoordinator: NSObject {
+    var onSelect: ((Int) -> Void)?
+    @objc func select(_ sender: UISegmentedControl) { onSelect?(sender.selectedSegmentIndex) }
+}
+
 struct CreationSearchField: View {
     let placeholder: String
     @Binding var text: String
+    var autofocus = false
     var submit: () -> Void = {}
+    @FocusState private var focused: Bool
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").foregroundStyle(CreationDesign.secondary)
             TextField(placeholder, text: $text).submitLabel(.search).onSubmit(submit)
                 .autocorrectionDisabled()
+                .focused($focused)
             if !text.isEmpty {
                 Button { text = ""; submit() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(CreationDesign.secondary) }
                     .accessibilityLabel("清空搜索").frame(minWidth: 32, minHeight: 44)
             }
         }.padding(.horizontal, 14).frame(minHeight: 48)
             .background(CreationDesign.soft.opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
+            .task { if autofocus { focused = true } }
+    }
+}
+
+struct CreationMiniPlayerHiddenKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+struct CreationComposeWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+struct CreationOverlayPresentedKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+private struct CreationParentPresentationKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    var creationParentPresented: Bool {
+        get { self[CreationParentPresentationKey.self] }
+        set { self[CreationParentPresentationKey.self] = newValue }
+    }
+}
+
+/// Keyboard and presentations take precedence over the scroll-rest animation.
+struct CreationComposeVisibility: ViewModifier {
+    let visible: Bool
+    @Environment(\.creationParentPresented) private var parentPresented
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var keyboardVisible = false
+    private var shown: Bool { visible && !keyboardVisible && !parentPresented }
+    func body(content: Content) -> some View {
+        Group {
+            if shown {
+                content.transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 12)))
+            }
+        }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: shown)
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
     }
 }
 
@@ -131,7 +263,7 @@ struct CreationFilterChip: View {
             HStack(spacing: 6) {
                 if let symbol { Image(systemName: symbol) }
                 Text(title)
-            }.font(.subheadline.weight(selected ? .semibold : .regular))
+            }.font(CreationDesign.interface(.subheadline, weight: selected ? .semibold : .regular))
                 .padding(.horizontal, 16).frame(minHeight: 44)
                 .foregroundStyle(selected ? CreationDesign.accent : CreationDesign.secondary)
                 .overlay(alignment: .bottom) {
@@ -147,9 +279,9 @@ struct CreationSectionHeading: View {
     var detail: String = ""
     var body: some View {
         HStack {
-            Text(title).font(.headline)
+            Text(title).font(CreationDesign.interface(.headline))
             Spacer()
-            if !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(CreationDesign.secondary) }
+            if !detail.isEmpty { Text(detail).font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.secondary) }
         }.foregroundStyle(CreationDesign.foreground)
     }
 }
@@ -164,7 +296,7 @@ struct CreationFloatingButton: View {
             if #available(iOS 26.0, *) {
                 Button(action: action) {
                     Label(title, systemImage: symbol)
-                        .font(.subheadline.weight(.semibold))
+                        .font(CreationDesign.interface(.subheadline, weight: .semibold))
                         .padding(.horizontal, 12)
                         .frame(minHeight: 44)
                 }
@@ -173,11 +305,12 @@ struct CreationFloatingButton: View {
                 .tint(CreationDesign.accent)
             } else {
                 Button(action: action) {
-                    Label(title, systemImage: symbol).font(.subheadline.weight(.semibold))
+                    Label(title, systemImage: symbol).font(CreationDesign.interface(.subheadline, weight: .semibold))
                 }.buttonStyle(.borderedProminent).tint(CreationDesign.accent)
             }
         }
         .accessibilityLabel(title)
+        .background { GeometryReader { proxy in Color.clear.preference(key: CreationComposeWidthKey.self, value: proxy.size.width) } }
         .padding(.horizontal, 20).padding(.vertical, verticalPadding)
     }
 }
@@ -185,7 +318,7 @@ struct CreationFloatingButton: View {
 struct CreationPrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.headline).foregroundStyle(CreationDesign.primaryText)
+        configuration.label.font(CreationDesign.interface(.headline)).foregroundStyle(CreationDesign.primaryText)
             .padding(.horizontal, 18).frame(minHeight: 44)
             .background(CreationDesign.accent.opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.35), in: RoundedRectangle(cornerRadius: 6))
     }
@@ -209,12 +342,12 @@ struct CreationSaveBar: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 16) {
-                Text(message).font(.caption).foregroundStyle(CreationDesign.secondary)
+                Text(message).font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.secondary)
                 Spacer(minLength: 0)
                 saveButton
             }
             VStack(alignment: .leading, spacing: 10) {
-                Text(message).font(.caption).foregroundStyle(CreationDesign.secondary)
+                Text(message).font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.secondary)
                 saveButton.frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
@@ -238,7 +371,7 @@ struct CreationNotice: View {
     var isError = false
     var body: some View {
         Label(text, systemImage: isError ? "exclamationmark.circle" : "checkmark.circle")
-            .font(.subheadline).foregroundStyle(isError ? CreationDesign.danger : CreationDesign.secondary)
+            .font(CreationDesign.interface(.subheadline)).foregroundStyle(isError ? CreationDesign.danger : CreationDesign.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12).background(CreationDesign.soft, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityElement(children: .combine)
@@ -275,7 +408,7 @@ struct CreationRemoteImage: View {
     private func content(maxPixelSize: Int) -> some View {
         Group {
             if CreationPreview.isEnabled {
-                Image("EditorialPreview").resizable().aspectRatio(contentMode: contentMode)
+                Image(path?.contains("/preview-1.") == true ? "BrandCat" : "EditorialPreview").resizable().aspectRatio(contentMode: contentMode)
             } else if let path, let url = URL(string: path, relativeTo: site)?.absoluteURL, ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
                 RemoteImageView(url: url, loader: .shared, contentMode: contentMode, maxPixelSize: maxPixelSize) {
                     CreationDesign.soft.overlay { Image(systemName: "photo").foregroundStyle(CreationDesign.secondary) }

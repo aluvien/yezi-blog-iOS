@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>歌单与悬浮播放器 · 实际运行截图</title>
+<style>body{margin:0;padding:32px;background:#efede6;color:#262922;font-family:system-ui,sans-serif}main{max-width:1200px;margin:auto}p{line-height:1.8}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:24px}figure{margin:0}img{width:100%;border-radius:16px}figcaption{padding:12px 0 24px;line-height:1.6}</style>
+<main><h1>歌单与悬浮播放器</h1>
+<p>2026-10-24，375pt 模拟器实际运行截图。歌单、封面与音频使用测试夹具，音频为本地静音 WAV；随机歌单截图展示一次随机选取的结果。外部视频已直接创建 WKWebView，没有额外的“播放视频”入口，但截图与界面测试不能证明 Bilibili / YouTube 的线上播放可用性。本轮修改尚未上传 TestFlight。</p>
+<div class="grid">
+<figure><a href="playlist.png"><img src="playlist.png" alt="文章内歌单分页"></a><figcaption>顺序歌单：显示第二首的歌曲名、歌手、封面，可横向滑动。</figcaption></figure>
+<figure><a href="random.png"><img src="random.png" alt="随机歌单"></a><figcaption>随机歌单：进入后显示一首随机选中的已返回歌曲，不自动发声。</figcaption></figure>
+<figure><a href="mini-essays.png"><img src="mini-essays.png" alt="随笔页悬浮唱片"></a><figcaption>随笔页：左下角原生玻璃封面按钮，与写随笔同一水平。</figcaption></figure>
+<figure><a href="mini-moments.png"><img src="mini-moments.png" alt="絮语页悬浮唱片"></a><figcaption>絮语页：复用同一个播放器，封面播放时旋转。</figcaption></figure>
+<figure><a href="controls.png"><img src="controls.png" alt="展开播放控制器"></a><figcaption>点击封面展开播放控制器，保留进度、播放模式、歌词与队列。</figcaption></figure>
+</div></main></html>

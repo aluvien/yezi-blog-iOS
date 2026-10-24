@@ -2,6 +2,37 @@ import SwiftUI
 import AVFoundation
 import MediaPlayer
 
+struct CreationLyricLine: Equatable, Sendable, Identifiable {
+    let time: Double
+    let text: String
+    let id: Int
+}
+
+enum CreationLyrics {
+    static func parse(_ source: String) -> [CreationLyricLine] {
+        guard let regex = try? NSRegularExpression(pattern: #"\[(\d{2,3}):([0-5]\d)(?:[.:](\d{1,3}))?\]"#) else { return [] }
+        var entries: [(Double, String)] = []
+        for raw in source.replacingOccurrences(of: "\r", with: "").components(separatedBy: "\n") {
+            let line = raw as NSString
+            let matches = regex.matches(in: raw, range: NSRange(location: 0, length: line.length))
+            let text = regex.stringByReplacingMatches(in: raw, range: NSRange(location: 0, length: line.length), withTemplate: "").trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty else { continue }
+            for match in matches {
+                let fraction = match.range(at: 3).location == NSNotFound ? "" : line.substring(with: match.range(at: 3))
+                let time = (Double(line.substring(with: match.range(at: 1))) ?? 0) * 60 + (Double(line.substring(with: match.range(at: 2))) ?? 0) + (Double(fraction) ?? 0) / pow(10, Double(fraction.count))
+                entries.append((time, text))
+            }
+        }
+        return entries.enumerated().sorted { $0.element.0 == $1.element.0 ? $0.offset < $1.offset : $0.element.0 < $1.element.0 }
+            .enumerated().map { CreationLyricLine(time: $0.element.element.0, text: $0.element.element.1, id: $0.offset) }
+    }
+    static func current(_ lines: [CreationLyricLine], at time: Double) -> Int? {
+        var low = 0, high = lines.count
+        while low < high { let middle = (low + high) / 2; if lines[middle].time <= time { low = middle + 1 } else { high = middle } }
+        return low > 0 ? low - 1 : nil
+    }
+}
+
 /// Keep potentially blocking audio-session activation off the UI actor.
 private actor CreationAudioSession {
     static let shared = CreationAudioSession()
@@ -77,6 +108,12 @@ final class CreationAudioPlayer: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var elapsed: Double = 0
     @Published private(set) var duration: Double = 0
+    @Published private(set) var lyrics: [CreationLyricLine] = []
+    @Published private(set) var lyricIndex: Int?
+    @Published private(set) var lyricsLoading = false
+    @Published private(set) var lyricsError: String?
+    private var lyricsTask: Task<Void, Never>?
+    private var lyricSource: String?
     @Published var message: String?
     @Published private(set) var messageID: String?
     var current: CreationMusic? { queue.current }
@@ -109,7 +146,7 @@ final class CreationAudioPlayer: ObservableObject {
         observeSystemAudio()
     }
     isolated deinit {
-        task?.cancel(); artworkTask?.cancel()
+        task?.cancel(); artworkTask?.cancel(); lyricsTask?.cancel()
         if let periodicObserver { player?.removeTimeObserver(periodicObserver) }
         (itemObservers + systemObservers).forEach { NotificationCenter.default.removeObserver($0) }
         remoteTargets.forEach { $0.0.removeTarget($0.1) }
@@ -118,6 +155,8 @@ final class CreationAudioPlayer: ObservableObject {
     private func releaseItem() {
         generation = UUID(); task?.cancel(); task = nil
         artworkTask?.cancel(); artworkTask = nil; artwork = nil
+        lyricsTask?.cancel(); lyricsTask = nil; lyrics = []; lyricIndex = nil
+        lyricSource = nil; lyricsLoading = false; lyricsError = nil
         player?.pause()
         if let periodicObserver { player?.removeTimeObserver(periodicObserver) }
         periodicObserver = nil; player = nil; statusObservation = nil
@@ -151,10 +190,20 @@ final class CreationAudioPlayer: ObservableObject {
         else { updateNowPlaying() }
     }
 
+    func usesPlaylist(_ id: String?, at site: URL) -> Bool {
+        id != nil && playlistID == id && api?.siteRoot == site
+    }
+
     func preview(_ music: CreationMusic, api: AdminAPIClient) { play(music, in: [music], api: api) }
 
     func play(_ music: CreationMusic, in songs: [CreationMusic], api: AdminAPIClient, playlistID: String? = nil, nextOffset: Int? = nil) {
         if self.api?.siteRoot == api.siteRoot, current?.playbackKey == music.playbackKey {
+            // Selecting the same track from another list changes its queue without
+            // resolving the URL again or restarting the current audio item.
+            if self.playlistID != playlistID || queue.items.map(\.playbackKey) != songs.map(\.playbackKey) {
+                queue.set(songs, selected: music)
+                self.playlistID = playlistID; self.nextOffset = nextOffset
+            }
             toggle(); return
         }
         self.api = api
@@ -233,6 +282,7 @@ final class CreationAudioPlayer: ObservableObject {
     func seek(to seconds: Double) {
         guard seconds.isFinite, duration.isFinite, duration > 0, player != nil else { return }
         elapsed = min(duration, max(0, seconds))
+        updateLyricPosition()
         player?.seek(to: CMTime(seconds: elapsed, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         updateNowPlaying()
     }
@@ -278,7 +328,9 @@ final class CreationAudioPlayer: ObservableObject {
                 self.itemObservers.append(NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] _ in
                     Task { @MainActor in guard let self, self.generation == token else { return }; self.fail("播放中断，请重试。") }
                 })
-                self.statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+                // KVO can arrive on AVFoundation's worker queue. Do not inherit
+                // MainActor isolation at this Objective-C callback boundary.
+                self.statusObservation = item.observe(\.status, options: [.initial, .new]) { @Sendable [weak self] item, _ in
                     let status = item.status
                     let seconds = item.duration.seconds
                     Task { @MainActor in
@@ -290,11 +342,13 @@ final class CreationAudioPlayer: ObservableObject {
                         } else if status == .failed { self.fail("音频无法播放，请重试。") }
                     }
                 }
-                self.periodicObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 600), queue: .main) { [weak self] time in
+                self.periodicObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 600), queue: .main) { @Sendable [weak self] time in
                     let seconds = time.seconds
                     Task { @MainActor in
                         guard let self, self.generation == token else { return }
-                        self.elapsed = seconds.isFinite ? max(0, seconds) : 0
+                        let elapsed = seconds.isFinite ? max(0, seconds) : 0
+                        if self.elapsed != elapsed { self.elapsed = elapsed }
+                        self.updateLyricPosition()
                         let length = self.player?.currentItem?.duration.seconds ?? 0
                         self.duration = length.isFinite ? max(0, length) : 0
                         self.updateNowPlaying()
@@ -302,6 +356,8 @@ final class CreationAudioPlayer: ObservableObject {
                 }
                 self.isPlaying = true; player.play(); self.updateNowPlaying()
                 self.loadArtwork(track.cover, site: api.siteRoot, token: token)
+                self.lyricSource = track.lyricSource
+                self.loadLyrics()
             } catch {
                 guard let self, self.generation == token, !Task.isCancelled else { return }
                 if isRequestCancellation(error) { self.releaseItem(); return }
@@ -314,6 +370,30 @@ final class CreationAudioPlayer: ObservableObject {
 
     private func fail(_ text: String) {
         releaseItem(); message = text; messageID = current?.spec; updateNowPlaying()
+    }
+    var currentLyric: String? { lyricIndex.flatMap { lyrics.indices.contains($0) ? lyrics[$0].text : nil } }
+    /// Compact surfaces replace their secondary text only while audio is playing.
+    var playingLyric: String? { isPlaying ? currentLyric?.trimmedNonEmpty : nil }
+    private func updateLyricPosition() {
+        let index = CreationLyrics.current(lyrics, at: elapsed)
+        if lyricIndex != index { lyricIndex = index }
+    }
+    func loadLyrics(retry: Bool = false) {
+        guard let source = lyricSource, !source.isEmpty, let api else { return }
+        lyricsTask?.cancel(); lyricsLoading = true; lyricsError = nil
+        let token = generation
+        lyricsTask = Task { [weak self] in
+            do {
+                let text = try await api.fetchLyrics(source: source, reuseLoaded: !retry)
+                let lines = CreationLyrics.parse(text)
+                guard let self, self.generation == token, !Task.isCancelled else { return }
+                self.lyrics = lines; self.lyricsLoading = false; self.updateLyricPosition()
+            } catch {
+                guard let self, self.generation == token, !Task.isCancelled else { return }
+                self.lyricsLoading = false
+                if !isRequestCancellation(error) { self.lyricsError = "歌词加载失败" }
+            }
+        }
     }
     private func reportFailure(_ text: String, api: AdminAPIClient, checkService: Bool) {
         fail(text)
@@ -332,7 +412,8 @@ final class CreationAudioPlayer: ObservableObject {
             guard let cg = try? await ImageLoader.shared.image(for: url, maxPixelSize: 384), !Task.isCancelled,
                   let self, self.generation == token else { return }
             let image = UIImage(cgImage: cg)
-            self.artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            // MediaPlayer may request the artwork from its own worker queue.
+            self.artwork = MPMediaItemArtwork(boundsSize: image.size) { @Sendable _ in image }
             self.updateNowPlaying()
         }
     }
@@ -355,10 +436,10 @@ final class CreationAudioPlayer: ObservableObject {
             (center.previousTrackCommand, { [weak self] in self?.previous() })]
         for (command, action) in actions {
             command.isEnabled = true
-            remoteTargets.append((command, command.addTarget { _ in Task { @MainActor in action() }; return .success }))
+            remoteTargets.append((command, command.addTarget { @Sendable _ in Task { @MainActor in action() }; return .success }))
         }
         center.changePlaybackPositionCommand.isEnabled = true
-        remoteTargets.append((center.changePlaybackPositionCommand, center.changePlaybackPositionCommand.addTarget { [weak self] event in
+        remoteTargets.append((center.changePlaybackPositionCommand, center.changePlaybackPositionCommand.addTarget { @Sendable [weak self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             let seconds = event.positionTime
             Task { @MainActor in self?.seek(to: seconds) }; return .success

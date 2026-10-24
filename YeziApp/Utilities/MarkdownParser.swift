@@ -1,6 +1,78 @@
 import Foundation
 import SwiftUI
 
+enum CreationVideoInput {
+    static func canonical(_ input: String) -> String? {
+        let raw = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.range(of: #"^BV[A-Za-z0-9]{10}$"#, options: .regularExpression) != nil { return "bilibili:" + raw }
+        let parts = raw.split(separator: ":").map(String.init)
+        if parts.first == "bilibili", (2...3).contains(parts.count),
+           parts[1].range(of: #"^(BV[A-Za-z0-9]{10}|av\d+)$"#, options: .regularExpression) != nil {
+            guard parts.count == 2 || (Int(parts[2]) ?? 0) > 0 else { return nil }
+            return "bilibili:" + parts[1] + (parts.count == 3 && parts[2] != "1" ? ":" + parts[2] : "")
+        }
+        if parts.first == "youtube", parts.count == 2, parts[1].range(of: #"^[A-Za-z0-9_-]{11}$"#, options: .regularExpression) != nil { return raw }
+        guard let url = URL(string: raw), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), let host = url.host?.lowercased() else { return nil }
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func value(_ key: String) -> String? { query.first { $0.name == key }?.value }
+        if host == "bilibili.com" || host.hasSuffix(".bilibili.com") {
+            let id = url.pathComponents.drop(while: { $0 != "video" }).dropFirst().first ?? value("bvid") ?? value("aid").map { "av" + $0 }
+            guard let id else { return nil }
+            let page = value("p") ?? value("page") ?? "1"
+            return canonical("bilibili:\(id):\(page)")
+        }
+        if host == "youtu.be" || host == "youtube.com" || host.hasSuffix(".youtube.com") || host == "youtube-nocookie.com" || host.hasSuffix(".youtube-nocookie.com") {
+            let path = url.pathComponents.filter { $0 != "/" }
+            let id = host == "youtu.be" ? path.first : value("v") ?? ((path.count > 1 && ["embed", "shorts", "live"].contains(path[0])) ? path[1] : nil)
+            return id.flatMap { canonical("youtube:" + $0) }
+        }
+        return nil
+    }
+    static func candidates(_ input: String) -> [String] {
+        let pattern = #"https?://[^\s<>\"，。！？；、）】]+|(?<![A-Za-z0-9])BV[A-Za-z0-9]{10}(?![A-Za-z0-9])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let text = input as NSString
+        var found: [String] = []; var seen = Set<String>()
+        for match in regex.matches(in: input, range: NSRange(location: 0, length: text.length)) {
+            var raw = text.substring(with: match.range)
+            while [")", "]", ".", ",", ";", "!"].contains(raw.last.map(String.init) ?? "") { raw.removeLast() }
+            let url = URL(string: raw)
+            let value = canonical(raw) ?? (url?.host?.lowercased() == "b23.tv" ? raw : nil)
+                ?? (url.map { ["mp4", "mov", "m4v", "m3u8", "webm"].contains($0.pathExtension.lowercased()) } == true ? raw : nil)
+            if let value, seen.insert(value).inserted { found.append(value) }
+        }
+        if found.isEmpty, let value = canonical(input) { found = [value] }
+        return found
+    }
+    static func embedURL(_ spec: String) -> URL? {
+        guard let canonical = canonical(spec) else { return nil }
+        let parts = canonical.split(separator: ":").map(String.init)
+        if parts[0] == "youtube" { return URL(string: "https://www.youtube-nocookie.com/embed/\(parts[1])?playsinline=1&rel=0") }
+        var url = URLComponents(string: "https://player.bilibili.com/player.html")!
+        url.queryItems = [URLQueryItem(name: parts[1].hasPrefix("av") ? "aid" : "bvid", value: parts[1].hasPrefix("av") ? String(parts[1].dropFirst(2)) : parts[1]), URLQueryItem(name: "page", value: parts.count == 3 ? parts[2] : "1"), URLQueryItem(name: "autoplay", value: "0")]
+        return url.url
+    }
+    static func resolve(_ candidate: String) async throws -> String {
+        guard URL(string: candidate)?.host?.lowercased() == "b23.tv" else { return candidate }
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil; config.urlCache = nil; config.timeoutIntervalForRequest = 12
+        let session = URLSession(configuration: config, delegate: CreationVideoRedirect(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: URL(string: candidate)!); request.httpMethod = "HEAD"
+        let (_, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let url = response.url, let value = canonical(url.absoluteString) else { throw URLError(.unsupportedURL) }
+        return value
+    }
+}
+
+private final class CreationVideoRedirect: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        let host = request.url?.host?.lowercased() ?? ""
+        completionHandler(request.url?.scheme == "https" && (host == "b23.tv" || host == "bilibili.com" || host.hasSuffix(".bilibili.com")) ? request : nil)
+    }
+}
+
 struct MusicMarker: Hashable, Sendable {
     let id: String
     let type: String
@@ -221,7 +293,8 @@ struct MarkdownParser: Sendable {
                 return nil
             }
             let payload = remainder.drop(while: { $0 == ":" || $0 == " " || $0 == "\t" })
-            return cleanMediaURL(String(payload))
+            let cleaned = cleanMediaURL(String(payload))
+            return cleaned.flatMap { providerVideoURL(in: $0) ?? $0 }
         }
 
         // The web editor stores provider videos as `bilibili:BV...[:page]`

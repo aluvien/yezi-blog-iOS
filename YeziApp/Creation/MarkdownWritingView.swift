@@ -136,7 +136,7 @@ struct MarkdownWritingView: UIViewRepresentable {
         let view = UITextView()
         view.delegate = context.coordinator
         view.backgroundColor = .clear
-        view.font = .preferredFont(forTextStyle: .body)
+        view.font = CreationDesign.writingFont(compatibleWith: view.traitCollection)
         view.adjustsFontForContentSizeCategory = true
         view.textColor = .label
         view.tintColor = UIColor(CreationDesign.accent)
@@ -155,15 +155,23 @@ struct MarkdownWritingView: UIViewRepresentable {
         context.coordinator.isUpdatingView = true
         defer { context.coordinator.isUpdatingView = false }
         controller.textView = view
-        view.isEditable = editable
+        if !view.isFirstResponder { view.isEditable = editable }
         if view.text != text && view.markedTextRange == nil {
             let selected = view.selectedRange
             view.text = text
             view.selectedRange = NSRange(location: min(selected.location, text.utf16.count), length: 0)
         }
-        if focused && !view.isFirstResponder && editable {
-            DispatchQueue.main.async { if self.focused && view.window != nil { view.becomeFirstResponder() } }
-        } else if !focused && view.isFirstResponder { view.resignFirstResponder() }
+        if focused != view.isFirstResponder || view.isEditable != editable {
+            // Changing the responder during a SwiftUI graph update can re-enter
+            // the hosting view's responder graph (notably while presenting a sheet).
+            DispatchQueue.main.async { [weak view, weak coordinator = context.coordinator] in
+                guard let view, let coordinator, coordinator.parent.controller.textView === view else { return }
+                let shouldFocus = coordinator.parent.focused && coordinator.parent.editable
+                if !shouldFocus && view.isFirstResponder { view.resignFirstResponder() }
+                view.isEditable = coordinator.parent.editable
+                if shouldFocus && view.window != nil && !view.isFirstResponder { view.becomeFirstResponder() }
+            }
+        }
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
         guard let width = proposal.width else { return nil }
@@ -178,9 +186,7 @@ struct MarkdownWritingView: UIViewRepresentable {
         init(_ parent: MarkdownWritingView) { self.parent = parent }
         func textViewDidChange(_ view: UITextView) {
             if isUpdatingView {
-                // UIKit can end editing synchronously in updateUIView. Commit
-                // delegate changes after SwiftUI finishes its update instead
-                // of delaying the actual keyboard dismissal.
+                // Defer any UIKit delegate callbacks caused by a SwiftUI update.
                 DispatchQueue.main.async { [weak self, weak view] in
                     guard let self, let view, self.parent.controller.textView === view else { return }
                     self.textViewDidChange(view)
@@ -210,6 +216,48 @@ struct MarkdownWritingView: UIViewRepresentable {
         }
         func textViewDidBeginEditing(_ view: UITextView) { if !isUpdatingView && !parent.focused { parent.focused = true } }
         func textViewDidEndEditing(_ view: UITextView) { if !isUpdatingView && parent.focused { parent.focused = false }; textViewDidChange(view) }
+    }
+}
+
+struct CreationEditorialToolbar: View {
+    @ObservedObject var controller: MarkdownWritingController
+    var idPrefix = "article.tool"
+    let image: () -> Void
+    let video: () -> Void
+    let music: () -> Void
+    let preview: () -> Void
+    var reference: (() -> Void)? = nil
+    var body: some View {
+        HStack(spacing: 0) {
+            tool("加粗", symbol: "bold", letter: "B") { controller.apply(.bold) }
+            tool("标题", symbol: "textformat.size", letter: "H") { controller.apply(.heading) }
+            if let reference {
+                Menu {
+                    Button("插入链接", systemImage: "link") { controller.apply(.link) }
+                    Button("引用资料", systemImage: "bookmark", action: reference)
+                } label: { label("链接", symbol: "link") }
+                    .accessibilityIdentifier("\(idPrefix).链接").accessibilityLabel("链接")
+            } else { tool("链接", symbol: "link") { controller.apply(.link) } }
+            tool("列表", symbol: "list.bullet") { controller.apply(.bullet) }
+            tool("图片", symbol: "photo", action: image)
+            tool("视频", symbol: "video", action: video)
+            tool("音乐", symbol: "music.note", action: music)
+            tool("预览", symbol: "eye", action: preview)
+        }.padding(.horizontal, 10).padding(.vertical, 5)
+            .background(.regularMaterial).foregroundStyle(CreationDesign.foreground)
+    }
+    private func tool(_ title: String, symbol: String, letter: String? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) { label(title, symbol: symbol, letter: letter) }
+            .buttonStyle(.plain).accessibilityLabel(title).accessibilityIdentifier("\(idPrefix).\(title)")
+    }
+    private func label(_ title: String, symbol: String, letter: String? = nil) -> some View {
+        VStack(spacing: 4) {
+            Group {
+                if let letter { Text(letter).font(CreationDesign.interface(size: 21, weight: .medium)) }
+                else { Image(systemName: symbol).font(CreationDesign.interface(size: 18, weight: .regular)) }
+            }.frame(height: 23)
+            Text(title).font(CreationDesign.interface(size: 10)).foregroundStyle(CreationDesign.secondary)
+        }.frame(maxWidth: .infinity, minHeight: 46).contentShape(Rectangle())
     }
 }
 

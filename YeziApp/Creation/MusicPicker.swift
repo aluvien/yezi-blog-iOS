@@ -129,6 +129,7 @@ struct CreationMusicCard: View {
     @State private var detailsFailed = false
     private var isCurrent: Bool { audio.current?.playbackKey == music.playbackKey }
     private var active: Bool { isCurrent && (audio.isPlaying || audio.isLoading) }
+    private var lyric: String? { isCurrent ? audio.playingLyric : nil }
 
     private var title: String {
         music.marker?.title?.trimmedNonEmpty
@@ -151,15 +152,30 @@ struct CreationMusicCard: View {
     }
 
     var body: some View {
+        if music.marker?.type == "playlist", !inline {
+            CreationEmbeddedPlaylistCard(music: music, api: api, compact: compact, replace: replace, remove: remove)
+        } else { songBody }
+    }
+
+    private var songBody: some View {
         Group {
         if inline {
             Button { audio.preview(music, api: api) } label: {
                 HStack(spacing: 5) {
                     Image(systemName: active ? "pause.fill" : "music.note")
-                    Text("\(title) · \(artist)").lineLimit(1)
+                    Text(lyric ?? "\(title) · \(artist)").lineLimit(1)
+                        .accessibilityIdentifier("music.inline.text.\(music.playbackKey)")
                     if active && audio.isLoading { ProgressView().controlSize(.mini) }
-                }.font(.subheadline).frame(minHeight: 32).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel("播放\(title)，\(artist)")
+                }.font(CreationDesign.copy(15, relativeTo: .subheadline)).frame(minHeight: 32).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel(lyric ?? "\(title) · \(artist)")
+                .accessibilityValue(active ? "正在播放，点击暂停" : "点击播放")
+                .accessibilityIdentifier("music.inline.\(music.playbackKey)")
+            if isCurrent, let message = audio.message {
+                HStack {
+                    Text(message).font(CreationDesign.interface(.caption)).foregroundStyle(.secondary)
+                    Button("重试播放") { audio.resumePlayback() }
+                }
+            }
         } else {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
@@ -169,15 +185,18 @@ struct CreationMusicCard: View {
                     .frame(width: compact ? 38 : 56, height: compact ? 38 : 56)
                     .clipShape(RoundedRectangle(cornerRadius: listRow ? 10 : 3))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(compact ? .subheadline.weight(.semibold) : .body.weight(.semibold)).lineLimit(1)
-                    Text(artist).font(compact ? .caption : .subheadline).foregroundStyle(CreationDesign.secondary).lineLimit(1)
+                    Text(title).font(CreationDesign.interface(compact ? .subheadline : .body, weight: .semibold)).lineLimit(1)
+                    Text(lyric ?? artist)
+                        .font(lyric == nil ? CreationDesign.interface(compact ? .caption : .subheadline) : CreationDesign.interface(size: compact ? 13 : 15, relativeTo: .subheadline))
+                        .foregroundStyle(lyric == nil ? CreationDesign.secondary : CreationDesign.accent).lineLimit(1)
+                        .accessibilityIdentifier("music.secondary.\(music.playbackKey)")
                 }.frame(maxWidth: .infinity, alignment: .leading)
                     Group {
                         if active && audio.isLoading {
                             ProgressView().controlSize(.small)
                         } else {
                             Image(systemName: active ? "pause.fill" : "play.fill")
-                                .font(.system(size: 16, weight: .semibold))
+                                .font(CreationDesign.interface(size: 16, weight: .semibold))
                         }
                     }.frame(width: 44, height: 44)
                 }.contentShape(Rectangle())
@@ -191,16 +210,13 @@ struct CreationMusicCard: View {
                     } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.accessibilityLabel("音乐操作")
                 }
             }
-            if let message = audio.message, isCurrent { Text(message).font(.caption).foregroundStyle(CreationDesign.secondary) }
+            if let message = audio.message, isCurrent { Text(message).font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.secondary) }
         }.padding(listRow ? 0 : (compact ? 8 : 12))
             .padding(.vertical, listRow ? 6 : 0)
             .background(listRow ? Color.clear : CreationDesign.soft, in: RoundedRectangle(cornerRadius: 12))
         }
         }
             .task(id: music.spec) { await resolveDetails() }
-            .alert("音乐暂时无法播放", isPresented: Binding(get: { inline && isCurrent && audio.message != nil }, set: { if !$0 { audio.message = nil } })) {
-                Button("好") { audio.message = nil }
-            } message: { Text(audio.message ?? "") }
     }
 
     private func resolveDetails() async {
@@ -216,11 +232,131 @@ struct CreationMusicCard: View {
                 guard !Task.isCancelled, track.mid == marker.id else { return }
                 resolvedSong = track
             } else {
-                let playlists = try await api.fetchQQMusicPlaylists().playlists
+                let playlists = try await api.fetchQQMusicPlaylists(reuseLoaded: true).playlists
                 guard !Task.isCancelled else { return }
                 resolvedPlaylist = playlists.first { $0.id == marker.id }
             }
         } catch { if !isRequestCancellation(error) { detailsFailed = true } }
+    }
+}
+
+private struct CreationEmbeddedPlaylistCard: View {
+    let music: CreationMusic
+    let api: AdminAPIClient
+    let compact: Bool
+    var replace: (() -> Void)?
+    var remove: (() -> Void)?
+    @StateObject private var model = CreationPlaylistModel()
+    @ObservedObject private var audio = CreationAudioPlayer.shared
+    @State private var selection = 0
+    @State private var initialized = false
+    @State private var ownsPlayback = false
+    @State private var finishedLoading = false
+
+    @State private var selectedMode: CreationPlaybackMode?
+    @ScaledMetric(relativeTo: .body) private var pageHeight: CGFloat = 80
+    private var mode: CreationPlaybackMode { selectedMode ?? (music.marker?.shuffle == true ? .shuffle : .ordered) }
+    private var selectedSong: CreationMusic? { model.songs.indices.contains(selection) ? model.songs[selection] : nil }
+    private var active: Bool { selectedSong?.playbackKey == audio.current?.playbackKey && (audio.isPlaying || audio.isLoading) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if model.songs.isEmpty {
+                HStack {
+                    if model.loading { ProgressView() }
+                    Text(model.error ?? (finishedLoading ? "歌单暂未返回歌曲" : "正在读取歌单歌曲…")).font(CreationDesign.interface(.subheadline))
+                    if model.error != nil { Button("重试") { Task { await load() } } }
+                }.frame(maxWidth: .infinity, minHeight: 76)
+            } else {
+                HStack(spacing: 0) {
+                    TabView(selection: $selection) {
+                        ForEach(Array(model.songs.enumerated()), id: \.element.playbackKey) { index, song in
+                            Group {
+                                if abs(index - selection) <= 1 {
+                                    Button { play(song) } label: { songInfo(song) }
+                                        .buttonStyle(.plain)
+                                        .accessibilityIdentifier("embedded.playlist.song.\(index)")
+                                } else { Color.clear }
+                            }.tag(index)
+                        }
+                    }.tabViewStyle(.page(indexDisplayMode: .never))
+                        .frame(height: compact ? pageHeight * 0.75 : pageHeight)
+                        .accessibilityIdentifier("embedded.playlist.pages")
+                    Button {
+                        selectedMode = mode == .shuffle ? .ordered : .shuffle
+                        if ownsPlayback { audio.mode = mode }
+                    } label: {
+                        Image(systemName: mode.symbol).font(.system(size: 14)).frame(width: 44, height: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).foregroundStyle(CreationDesign.accent)
+                        .accessibilityLabel(mode.rawValue).accessibilityValue("点击切换播放模式")
+                        .accessibilityIdentifier("embedded.playlist.mode")
+                    Button { if let song = selectedSong { play(song) } } label: {
+                        Group {
+                            if active && audio.isLoading { ProgressView().controlSize(.small) }
+                            else { Image(systemName: active ? "pause.fill" : "play.fill").font(.system(size: 16)) }
+                        }.frame(width: 44, height: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel(active ? "暂停播放" : "播放歌单歌曲")
+                        .accessibilityIdentifier("embedded.playlist.toggle")
+                    if replace != nil || remove != nil {
+                        Menu {
+                            if let replace { Button("替换音乐", action: replace) }
+                            if let remove { Button("移除音乐", role: .destructive) { if ownsPlayback { audio.stop() }; remove() } }
+                        } label: { Image(systemName: "ellipsis").frame(width: 36, height: 44) }
+                    }
+                }.padding(.trailing, 6)
+                if model.error != nil { Button("重试加载") { Task { await load() } }.font(CreationDesign.interface(.caption)) }
+                if ownsPlayback, let message = audio.message { Text(message).font(CreationDesign.interface(.caption)).padding(8) }
+            }
+        }.background(CreationDesign.soft, in: RoundedRectangle(cornerRadius: 12))
+            .task(id: music.spec) { if !initialized { await load() } }
+            .onChange(of: selection) { _, index in
+                guard initialized, model.songs.indices.contains(index) else { return }
+                let song = model.songs[index]
+                if ownsPlayback, audio.current?.playbackKey != song.playbackKey { play(song) }
+                if index >= model.songs.count - 2, model.nextOffset != nil { Task { await load() } }
+            }
+            .onChange(of: audio.current?.playbackKey) { _, key in
+                guard ownsPlayback, audio.usesPlaylist(music.marker?.id, at: api.siteRoot), let index = model.songs.firstIndex(where: { $0.playbackKey == key }) else { ownsPlayback = false; return }
+                selection = index
+            }
+            .onChange(of: audio.mode) { _, value in if ownsPlayback { selectedMode = value } }
+    }
+    private func songInfo(_ song: CreationMusic) -> some View {
+        let lyric = audio.current?.playbackKey == song.playbackKey ? audio.playingLyric : nil
+        return HStack(spacing: 10) {
+            CreationRemoteImage(path: song.cover, site: api.siteRoot)
+                .frame(width: compact ? 38 : 52, height: compact ? 38 : 52)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
+                    Text(song.title).font(CreationDesign.interface(compact ? .subheadline : .body, weight: .semibold)).lineLimit(1)
+                    Text("等 \(model.total) 首").font(CreationDesign.interface(.caption)).foregroundStyle(.secondary).fixedSize()
+                }
+                Text(lyric ?? song.artist)
+                    .font(lyric == nil ? CreationDesign.interface(.caption) : CreationDesign.interface(size: 14, relativeTo: .caption))
+                    .foregroundStyle(lyric == nil ? CreationDesign.secondary : CreationDesign.accent).lineLimit(1)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(.leading, 12).padding(.trailing, 4).contentShape(Rectangle())
+    }
+    private func load() async {
+        guard let id = music.marker?.id else { return }
+        await model.load(api: api, id: id)
+        guard !Task.isCancelled else { return }
+        finishedLoading = true
+        guard !Task.isCancelled, !initialized, !model.songs.isEmpty else { return }
+        if let index = model.songs.firstIndex(where: { $0.playbackKey == audio.current?.playbackKey }) {
+            selection = index
+            ownsPlayback = audio.usesPlaylist(music.marker?.id, at: api.siteRoot)
+            if ownsPlayback { selectedMode = audio.mode }
+        } else {
+            selection = music.marker?.shuffle == true ? Int.random(in: model.songs.indices) : 0
+        }
+        initialized = true
+    }
+    private func play(_ song: CreationMusic) {
+        ownsPlayback = true
+        if audio.mode != mode { audio.mode = mode }
+        audio.play(song, in: model.songs, api: api, playlistID: music.marker?.id, nextOffset: model.nextOffset)
     }
 }
 
@@ -244,7 +380,7 @@ struct MusicPickerView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Picker("搜索类型", selection: $model.type) { Text("歌曲").tag(AdminMusicSearchType.song); Text("歌单").tag(AdminMusicSearchType.playlist) }.pickerStyle(.segmented)
+                    CreationSegmentedPicker(selection: $model.type, values: [.song, .playlist], titles: ["歌曲", "歌单"]).accessibilityLabel("搜索类型")
                     HStack {
                         Image(systemName: "magnifyingglass")
                         TextField("搜索歌曲名或歌手", text: $model.query).submitLabel(.search).onSubmit { model.scheduleSearch() }
@@ -253,7 +389,7 @@ struct MusicPickerView: View {
                     if model.isLoading { ProgressView("正在搜索…") }
                     if let error = model.error { CreationNotice(text: error, isError: true); Button("重试搜索") { model.scheduleSearch() } }
                     if let message = audio.message { CreationNotice(text: message, isError: true) }
-                    Text(model.query.isEmpty ? "最近添加" : "搜索结果").font(.headline)
+                    Text(model.query.isEmpty ? "最近添加" : "搜索结果").font(CreationDesign.interface(.headline))
                     let items = model.query.isEmpty ? model.recent : model.results
                     if items.isEmpty && !model.isLoading && model.error == nil {
                         Text(model.query.isEmpty ? "添加的音乐会保存在当前站点的最近记录中。" : "没找到这首音乐，试试歌曲名或歌手").foregroundStyle(CreationDesign.secondary)
@@ -264,7 +400,7 @@ struct MusicPickerView: View {
                             Button { model.select(item); audio.stop() } label: {
                                 HStack(spacing: 12) {
                                     CreationRemoteImage(path: item.cover, site: model.api.siteRoot).frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 10))
-                                    VStack(alignment: .leading, spacing: 4) { Text(item.title).font(.body.weight(.medium)); Text(item.artist).font(.subheadline).foregroundStyle(CreationDesign.secondary) }
+                                    VStack(alignment: .leading, spacing: 4) { Text(item.title).font(CreationDesign.interface(.body).weight(.medium)); Text(item.artist).font(CreationDesign.interface(.subheadline)).foregroundStyle(CreationDesign.secondary) }
                                     Spacer(minLength: 4)
                                     Image(systemName: model.selected?.spec == item.spec ? "checkmark.circle.fill" : "circle").foregroundStyle(CreationDesign.accent)
                                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
@@ -300,6 +436,7 @@ struct MusicPickerView: View {
                     }.buttonStyle(CreationPrimaryButtonStyle()).disabled(model.selection == nil).opacity(model.selection == nil ? 0.5 : 1).padding(16).frame(maxWidth: .infinity).background(CreationDesign.surface)
                 }
         }.tint(CreationDesign.accent)
+            .modifier(CreationContentTabSwipe(selection: $model.type, values: [.song, .playlist]))
             .task {
                 if !auditionStarted { CreationAudioPlayer.shared.suspendForAudition(); auditionStarted = true }
                 await model.loadRecent()

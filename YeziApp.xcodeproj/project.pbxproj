@@ -7,8 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		MUSBA001 = {isa = PBXBuildFile; fileRef = MUSFI001; };
-		MUSBA002 = {isa = PBXBuildFile; fileRef = MUSFI002; };
 		A001 /* YeziAppApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F001 /* YeziAppApp.swift */; };
 		A002 /* AppContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F002 /* AppContainer.swift */; };
 		A003 /* APIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F003 /* APIModels.swift */; };
@@ -42,6 +40,9 @@
 		CBA012 /* AIImageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI012 /* AIImageService.swift */; };
 		CBA013 /* AIImageComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFI013 /* AIImageComposerView.swift */; };
 		EDA001 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = EDF001 /* Fonts */; };
+		MUSBA001 /* CreationAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = MUSFI001 /* CreationAudioPlayer.swift */; };
+		MUSBA002 /* CreationListeningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MUSFI002 /* CreationListeningView.swift */; };
+		PUSHB001 /* PushNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = PUSHF001 /* PushNotifications.swift */; };
 		UIA001 /* InteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = UIF001 /* InteractionTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -63,8 +64,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		MUSFI001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationAudioPlayer.swift; sourceTree = "<group>"; };
-		MUSFI002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationListeningView.swift; sourceTree = "<group>"; };
 		CFI001 /* CreationDraftStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationDraftStore.swift; sourceTree = "<group>"; };
 		CFI002 /* MediaUploadQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaUploadQueue.swift; sourceTree = "<group>"; };
 		CFI003 /* CreationComposerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationComposerModel.swift; sourceTree = "<group>"; };
@@ -101,6 +100,9 @@
 		F020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		F021 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		F022 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		MUSFI001 /* CreationAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationAudioPlayer.swift; sourceTree = "<group>"; };
+		MUSFI002 /* CreationListeningView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreationListeningView.swift; sourceTree = "<group>"; };
+		PUSHF001 /* PushNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotifications.swift; sourceTree = "<group>"; };
 		UIF001 /* InteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionTests.swift; sourceTree = "<group>"; };
 		UIF002 /* YeziAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YeziAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -131,8 +133,8 @@
 				CFI003 /* CreationComposerModel.swift */,
 				CFI004 /* CreationDesign.swift */,
 				CFI005 /* MusicPicker.swift */,
-				MUSFI001,
-				MUSFI002,
+				MUSFI001 /* CreationAudioPlayer.swift */,
+				MUSFI002 /* CreationListeningView.swift */,
 				CFI006 /* CreationComposerView.swift */,
 				CFI007 /* CreationHubViews.swift */,
 				CFI008 /* CreationPreview.swift */,
@@ -167,6 +169,7 @@
 			isa = PBXGroup;
 			children = (
 				F001 /* YeziAppApp.swift */,
+				PUSHF001 /* PushNotifications.swift */,
 				F002 /* AppContainer.swift */,
 			);
 			path = App;
@@ -346,6 +349,11 @@
 				TargetAttributes = {
 					N001 = {
 						CreatedOnToolsVersion = 27.0;
+						SystemCapabilities = {
+							com.apple.Push = {
+								enabled = 1;
+							};
+						};
 					};
 					N002 = {
 						CreatedOnToolsVersion = 27.0;
@@ -396,13 +404,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				A001 /* YeziAppApp.swift in Sources */,
+				PUSHB001 /* PushNotifications.swift in Sources */,
 				CBA001 /* CreationDraftStore.swift in Sources */,
 				CBA002 /* MediaUploadQueue.swift in Sources */,
 				CBA003 /* CreationComposerModel.swift in Sources */,
 				CBA004 /* CreationDesign.swift in Sources */,
 				CBA005 /* MusicPicker.swift in Sources */,
-				MUSBA001,
-				MUSBA002,
+				MUSBA001 /* CreationAudioPlayer.swift in Sources */,
+				MUSBA002 /* CreationListeningView.swift in Sources */,
 				CBA006 /* CreationComposerView.swift in Sources */,
 				CBA007 /* CreationHubViews.swift in Sources */,
 				CBA008 /* CreationPreview.swift in Sources */,
@@ -486,11 +495,13 @@
 		BC003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = YeziApp/YeziApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 29;
+				CURRENT_PROJECT_VERSION = 34;
 				DEVELOPMENT_TEAM = DR2TNGTRAJ;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -509,10 +520,12 @@
 		BC004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = YeziApp/YeziApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 29;
+				CURRENT_PROJECT_VERSION = 34;
 				DEVELOPMENT_TEAM = DR2TNGTRAJ;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = YeziApp/Info.plist;

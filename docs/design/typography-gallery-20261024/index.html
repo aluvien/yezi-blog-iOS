@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>字体与图片浏览 · 实际运行验收</title>
+<style>
+body{margin:0;background:#f2efe8;color:#292b27;font:16px/1.7 system-ui,sans-serif}main{max-width:1060px;margin:auto;padding:32px 20px}h1{font-size:27px}p{color:#62685f}a{color:#557460}video{display:block;width:min(100%,360px);max-height:760px;background:#000;border-radius:18px;margin:20px auto}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px}figure{margin:0}img{display:block;width:100%;border-radius:14px}figcaption{padding:10px 0 22px}section{margin:32px 0}small{color:#62685f}
+</style>
+<main>
+<h1>字体与图片浏览</h1>
+<p>实际 iOS 模拟器截图与录屏，使用离线示例数据。宋体标题＋文楷正文；操作控件保持系统字体。模拟器回归不等于真机帧率测量。</p>
+<section><h2>左右滑动实录</h2><p>原生全屏分页，连续快滑、反向与短拖取消。录屏仅截取操作片段，保持原速；图片为两张不同的测试资源。</p>
+<video controls playsinline preload="metadata" poster="gallery-second.png" src="gallery-swipes.mp4"></video>
+<a href="gallery-swipes.mp4">打开／下载原速录屏</a></section>
+<section class="grid">
+<figure><a href="typography-reader.png"><img src="typography-reader.png" alt="文章阅读"></a><figcaption>文章阅读：分类、日期、标签同排</figcaption></figure>
+<figure><a href="typography-about.png"><img src="typography-about.png" alt="关于编辑"></a><figcaption>关于页面：文楷输入与紧凑工具栏</figcaption></figure>
+<figure><a href="typography-articles.png"><img src="typography-articles.png" alt="文章列表"></a><figcaption>文章列表：宋体标题、文楷摘要</figcaption></figure>
+<figure><a href="typography-comments.png"><img src="typography-comments.png" alt="评论正文"></a><figcaption>评论正文使用文楷</figcaption></figure>
+<figure><a href="editorial-editor-keyboard.png"><img src="editorial-editor-keyboard.png" alt="编辑器"></a><figcaption>文章编辑与系统键盘</figcaption></figure>
+<figure><a href="typography-writing.png"><img src="typography-writing.png" alt="中英混排"></a><figcaption>中英文、数字、表情及生僻字输入</figcaption></figure>
+<figure><a href="small-typography-feed.png"><img src="small-typography-feed.png" alt="小屏絮语"></a><figcaption>375pt 小屏絮语列表</figcaption></figure>
+<figure><a href="small-refined-dark-reader.png"><img src="small-refined-dark-reader.png" alt="深色大字阅读"></a><figcaption>375pt 深色与辅助功能大字体</figcaption></figure>
+</section>
+<small>2026-10-24 · 本轮本地修改，未上传 TestFlight 或 GitHub。</small>
+</main>
+</html>

@@ -32,14 +32,15 @@ private struct CreationVideoInsertSheet: View {
     @State private var selection: PhotosPickerItem?
     @State private var video: CreationPickedVideo?
     @State private var link = ""
+    @State private var chosenLink: String?
     @State private var busy = false
     @State private var progress: Double = 0
     @State private var error: String?
     @State private var uploadTask: Task<Void, Never>?
     private var validLink: String? {
-        let raw = link.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: raw), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { return nil }
-        return url.absoluteString
+        let values = CreationVideoInput.candidates(link)
+        if let chosenLink, values.contains(chosenLink) { return chosenLink }
+        return values.count == 1 ? values[0] : nil
     }
     var body: some View {
         NavigationStack {
@@ -48,19 +49,40 @@ private struct CreationVideoInsertSheet: View {
                 Section {
                     PhotosPicker(selection: $selection, matching: .videos) { Label("从相册选择视频", systemImage: "video") }.disabled(busy)
                 } footer: { Text("支持 MP4、MOV，最大 20 MB。较长视频可使用链接插入。") }
-                if busy { Section { ProgressView(value: progress) { Text(progress >= 1 ? "服务器正在处理…" : "正在读取或上传视频…") } } }
+                if busy { Section {
+                    if video == nil && validLink != nil { ProgressView("正在识别视频链接…") }
+                    else { ProgressView(value: progress) { Text(progress >= 1 ? "服务器正在处理…" : "正在读取或上传视频…") } }
+                } }
                 if let error {
                     Section {
                         Text(error).foregroundStyle(.red)
                         if video != nil { Button("重试上传") { startUpload() }.disabled(busy) }
                     }
                 }
-                Section("视频链接") {
-                    TextField("https://", text: $link).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button("插入链接") {
+                Section("链接、分享文字或 BV 号") {
+                    TextField("粘贴分享内容，或输入 BV 号", text: $link, axis: .vertical).lineLimit(2...5).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityIdentifier("video.input")
+                    ForEach(CreationVideoInput.candidates(link), id: \.self) { value in
+                        Button { chosenLink = value } label: {
+                            HStack {
+                                Label(value, systemImage: value.hasPrefix("youtube:") ? "play.rectangle" : "video").lineLimit(2)
+                                Spacer()
+                                if validLink == value { Image(systemName: "checkmark") }
+                            }
+                        }.buttonStyle(.plain)
+                    }
+                    Button("确认插入") {
                         guard let validLink else { return }
-                        onInsert(validLink, nil); dismiss()
+                        busy = true; error = nil
+                        uploadTask = Task {
+                            do {
+                                let value = try await CreationVideoInput.resolve(validLink)
+                                guard !Task.isCancelled else { return }
+                                onInsert(value, nil); busy = false; dismiss()
+                            } catch { if !isRequestCancellation(error) { self.error = "视频识别失败，请检查链接后重试" }; busy = false }
+                        }
                     }.disabled(validLink == nil || busy)
+                    if !link.isEmpty && CreationVideoInput.candidates(link).isEmpty { Text("未识别到视频，请粘贴 Bilibili、YouTube 链接或完整 BV 号。").foregroundStyle(.secondary) }
                 }
                 }.listRowBackground(CreationDesign.surface)
             }.scrollContentBackground(.hidden).background(CreationDesign.canvas)
@@ -120,7 +142,7 @@ struct CreationComposerView: View {
     }
 
     private var article: Bool { model.draft.kind == .post }
-    private var title: String { article ? (model.draft.serverID == nil ? "写文章" : "编辑文章") : (model.draft.serverID == nil ? "写絮语" : "编辑絮语") }
+    private var title: String { article ? (model.draft.serverID == nil ? "写随笔" : "编辑随笔") : (model.draft.serverID == nil ? "写絮语" : "编辑絮语") }
 
     var body: some View {
         editorLayout.background(CreationDesign.canvas).foregroundStyle(CreationDesign.foreground).tint(CreationDesign.accent)
@@ -140,7 +162,7 @@ struct CreationComposerView: View {
                 }
             }
             .sheet(item: $sheet, onDismiss: resumeWriting) { value in sheetContent(value) }
-            .sheet(item: $previewMedia) { media in CreationImagePreview(media: media, api: model.api, site: model.draft.site) }
+            .fullScreenCover(item: $previewMedia) { media in CreationImagePreview(selection: CreationImageSelection(items: model.draft.media, index: model.draft.media.firstIndex(where: { $0.id == media.id }) ?? 0), api: model.api, site: model.draft.site) }
             .confirmationDialog("舍弃本机草稿？", isPresented: $showsDiscard, titleVisibility: .visible) {
                 Button("舍弃草稿", role: .destructive) { Task { if await model.discard() { dismiss() } } }
             } message: { Text("仅删除此草稿与它的本地图片，不会删除已上传的服务器附件。") }
@@ -215,7 +237,7 @@ struct CreationComposerView: View {
 
     private var imageOptions: some View {
         VStack(spacing: 0) {
-            Text("添加图片").font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 20)
+            Text("添加图片").font(CreationDesign.interface(.headline)).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 20)
             imageOption("AI 生图", detail: "描述画面，生成配图", symbol: "sparkle", accent: true) { sheet = .aiImage }
             Divider().overlay(CreationDesign.border)
             imageOption("拍照", detail: "用相机记录这一刻", symbol: "camera") { openCamera() }.disabled(model.draft.media.count >= 9)
@@ -229,10 +251,10 @@ struct CreationComposerView: View {
     private func imageOption(_ title: String, detail: String, symbol: String, accent: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 20) {
-                Image(systemName: symbol).font(.system(size: 25)).foregroundStyle(accent ? CreationDesign.accent : CreationDesign.foreground).frame(width: 32)
-                VStack(alignment: .leading, spacing: 4) { Text(title).font(.body); Text(detail).font(.caption).foregroundStyle(CreationDesign.secondary) }
+                Image(systemName: symbol).font(CreationDesign.interface(size: 25)).foregroundStyle(accent ? CreationDesign.accent : CreationDesign.foreground).frame(width: 32)
+                VStack(alignment: .leading, spacing: 4) { Text(title).font(CreationDesign.interface(.body)); Text(detail).font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.secondary) }
                 Spacer()
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(CreationDesign.secondary)
+                Image(systemName: "chevron.right").font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.secondary)
             }.frame(maxWidth: .infinity, minHeight: 76).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityIdentifier("image-option.\(title)")
     }
@@ -256,7 +278,7 @@ struct CreationComposerView: View {
                     recoveryControls
                     writingCanvas
                     attachments
-                    if let blocker = model.submitBlocker { Text(blocker).font(.subheadline).foregroundStyle(CreationDesign.secondary).accessibilityLabel("暂不能发布：\(blocker)") }
+                    if let blocker = model.submitBlocker { Text(blocker).font(CreationDesign.interface(.subheadline)).foregroundStyle(CreationDesign.secondary).accessibilityLabel("暂不能发布：\(blocker)") }
                 }.padding(20)
             }.scrollDismissesKeyboard(.interactively)
             if article { articleToolbar } else { mediaBar }
@@ -269,7 +291,7 @@ struct CreationComposerView: View {
             Text(model.localStatus)
             Spacer(minLength: 0)
             if !article { Text("\(model.draft.serializedContent.utf16.count)/20,000").monospacedDigit() }
-        }.font(.caption).foregroundStyle(model.storageError == nil ? CreationDesign.secondary : CreationDesign.danger).accessibilityElement(children: .combine)
+        }.font(CreationDesign.interface(.caption)).foregroundStyle(model.storageError == nil ? CreationDesign.secondary : CreationDesign.danger).accessibilityElement(children: .combine)
     }
 
     @ViewBuilder private var recoveryControls: some View {
@@ -279,7 +301,7 @@ struct CreationComposerView: View {
         if !model.canEdit && !model.isLoading { Button("重新加载文章") { Task { await model.load() } }.buttonStyle(.bordered) }
         if model.draft.submission == .uncertain {
             Button("保留草稿，查看列表") { closeForReview() }.buttonStyle(.bordered)
-            Button("我已核对列表，确认未发布") { showsUncertainConfirmation = true }.font(.subheadline)
+            Button("我已核对列表，确认未发布") { showsUncertainConfirmation = true }.font(CreationDesign.interface(.subheadline))
         }
     }
 
@@ -290,7 +312,7 @@ struct CreationComposerView: View {
     @ViewBuilder private var writingCanvas: some View {
         if article {
             TextField("文章标题", text: model.binding(\.title), axis: .vertical)
-                .font(CreationDesign.editorial(32, relativeTo: .title, bold: true)).padding(.vertical, 12).disabled(model.isSaving || !model.canEdit)
+                .font(CreationDesign.contentTitle(32, relativeTo: .title, bold: true)).padding(.vertical, 12).disabled(model.isSaving || !model.canEdit)
         }
         ZStack(alignment: .topLeading) {
             if model.draft.text.isEmpty { Text(article ? "从这里开始写作…" : "这一刻，想说点什么…").foregroundStyle(CreationDesign.secondary).padding(.top, 12).padding(.leading, 5).allowsHitTesting(false) }
@@ -318,12 +340,12 @@ struct CreationComposerView: View {
             if article {
                 Menu { articleOptions } label: {
                     HStack(spacing: 5) {
-                        Text(title).font(.headline)
-                        Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium)).foregroundStyle(CreationDesign.secondary)
+                        Text(title).font(CreationDesign.interface(.headline))
+                        Image(systemName: "chevron.down").font(CreationDesign.interface(size: 9, weight: .medium)).foregroundStyle(CreationDesign.secondary)
                     }.frame(minHeight: 44).contentShape(Rectangle())
                 }.accessibilityLabel("文章选项").accessibilityIdentifier("article.options")
                     .disabled(model.isSaving || !model.canEdit)
-            } else { Text(title).font(.headline) }
+            } else { Text(title).font(CreationDesign.interface(.headline)) }
             HStack {
             Button { focused = false; Task { if await model.close() { dismiss() } } } label: {
                 Text("取消").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
@@ -336,7 +358,7 @@ struct CreationComposerView: View {
                 }
             }.foregroundStyle(CreationDesign.accent).frame(minWidth: 44, minHeight: 44)
                 .disabled(model.submitBlocker != nil).opacity(model.submitBlocker == nil ? 1 : 0.5)
-            }.font(.subheadline)
+            }.font(CreationDesign.interface(.subheadline))
         }.buttonStyle(.plain).padding(.horizontal, 16).padding(.vertical, 4).background(CreationDesign.canvas)
             .overlay(alignment: .bottom) { Rectangle().fill(CreationDesign.border).frame(height: 0.5) }
     }
@@ -363,32 +385,12 @@ struct CreationComposerView: View {
     }
 
     private var articleToolbar: some View {
-        HStack(spacing: 0) {
-            articleTool("加粗", symbol: "bold", letter: "B") { writing.apply(.bold) }
-            articleTool("标题", symbol: "textformat.size", letter: "H") { writing.apply(.heading) }
-            articleTool("链接", symbol: "link") { writing.apply(.link) }
-            articleTool("列表", symbol: "list.bullet") { writing.apply(.bullet) }
-            Rectangle().fill(CreationDesign.border).frame(width: 0.5, height: 28).padding(.horizontal, 4)
-            articleTool("图片", symbol: "photo") { focused = false; sheet = .imageOptions }
-            articleTool("视频", symbol: "video") { focused = false; sheet = .video }
-            articleTool("音乐", symbol: "music.note") { focused = false; replacingMusic = model.draft.music.first?.id; sheet = .music }
-            articleTool("预览", symbol: "eye") { focused = false; sheet = .preview }
-        }.padding(.horizontal, 10).padding(.vertical, 5)
-            .background(CreationDesign.canvas)
-            .overlay(alignment: .top) { Rectangle().fill(CreationDesign.border).frame(height: 0.5) }
+        CreationEditorialToolbar(controller: writing,
+            image: { focused = false; sheet = .imageOptions },
+            video: { focused = false; sheet = .video },
+            music: { focused = false; replacingMusic = model.draft.music.first?.id; sheet = .music },
+            preview: { focused = false; sheet = .preview })
             .disabled(model.isSaving || !model.canEdit)
-    }
-
-    private func articleTool(_ title: String, symbol: String, letter: String? = nil, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Group {
-                    if let letter { Text(letter).font(.system(size: 21, weight: .medium, design: .serif)) }
-                    else { Image(systemName: symbol).font(.system(size: 18, weight: .regular)) }
-                }.frame(height: 23)
-                Text(title).font(.system(size: 10)).foregroundStyle(CreationDesign.secondary)
-            }.frame(maxWidth: .infinity, minHeight: 46).contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityLabel(title).accessibilityIdentifier("article.tool.\(title)")
     }
 
     private func musicCard(_ music: CreationMusic) -> some View {
@@ -413,7 +415,7 @@ struct CreationComposerView: View {
                 Button("选择已有附件") { focused = false; sheet = .attachment }
                 Button("舍弃草稿", role: .destructive) { showsDiscard = true }
             } label: { CreationToolLabel(title: "更多", symbol: "ellipsis") }
-        }.font(.subheadline.weight(.medium)).foregroundStyle(CreationDesign.foreground).padding(.horizontal, 8).background(CreationDesign.canvas)
+        }.font(CreationDesign.interface(.subheadline).weight(.medium)).foregroundStyle(CreationDesign.foreground).padding(.horizontal, 8).background(CreationDesign.canvas)
             .overlay(alignment: .top) { Rectangle().fill(CreationDesign.border).frame(height: 0.5) }.disabled(model.isSaving || !model.canEdit)
     }
 
@@ -454,7 +456,7 @@ struct CreationComposerView: View {
                     if model.draft.status == "published" { Text("已发布文章不会因本机保存而转为草稿。").foregroundStyle(CreationDesign.secondary) }
                     else {
                         Button("保存服务器草稿") { Task { if await model.submit(serverDraft: true) { onPublished() } } }.disabled(model.isSaving || model.draft.submission == .uncertain)
-                        Text("显式保存到站点；自动保存仅写入本机。").font(.subheadline).foregroundStyle(CreationDesign.secondary)
+                        Text("显式保存到站点；自动保存仅写入本机。").font(CreationDesign.interface(.subheadline)).foregroundStyle(CreationDesign.secondary)
                     }
                 }
                 if let error = model.errorMessage { Section { CreationNotice(text: error, isError: true) } }
@@ -474,11 +476,11 @@ struct CreationMediaGrid: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ZStack(alignment: .topTrailing) {
                         Button { onPreview(media) } label: { CreationLocalImage(media: media, site: model.draft.site, api: model.api).frame(height: model.draft.media.count == 1 ? 190 : 105).clipped().clipShape(RoundedRectangle(cornerRadius: 14)) }.buttonStyle(.plain).accessibilityLabel("查看第 \(index + 1) 张图片")
-                        Button { model.removeImage(media.id) } label: { Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(.white, .black.opacity(0.65)).frame(width: 44, height: 44) }.accessibilityLabel("移除第 \(index + 1) 张图片")
+                        Button { model.removeImage(media.id) } label: { Image(systemName: "xmark.circle.fill").font(CreationDesign.interface(.title3)).foregroundStyle(.white, .black.opacity(0.65)).frame(width: 44, height: 44) }.accessibilityLabel("移除第 \(index + 1) 张图片")
                     }
                     HStack(spacing: 4) {
                         if [.preparing, .waiting, .uploading].contains(media.state) { ProgressView().controlSize(.mini) }
-                        Text(status(media)).font(.caption).foregroundStyle(media.state == .failed ? CreationDesign.danger : CreationDesign.secondary)
+                        Text(status(media)).font(CreationDesign.interface(.caption)).foregroundStyle(media.state == .failed ? CreationDesign.danger : CreationDesign.secondary)
                         Spacer(minLength: 0)
                         Menu {
                             if media.state == .failed { Button("重试第 \(index + 1) 张图片") { model.retryImage(media.id) } }
@@ -487,7 +489,7 @@ struct CreationMediaGrid: View {
                             Button("移除", role: .destructive) { model.removeImage(media.id) }
                         } label: { Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("第 \(index + 1) 张图片操作")
                     }
-                    if media.state == .failed { Button("点按重试") { model.retryImage(media.id) }.font(.caption).accessibilityLabel("重试第 \(index + 1) 张图片"); Text(media.error ?? "上传失败").font(.caption).foregroundStyle(CreationDesign.danger) }
+                    if media.state == .failed { Button("点按重试") { model.retryImage(media.id) }.font(CreationDesign.interface(.caption)).accessibilityLabel("重试第 \(index + 1) 张图片"); Text(media.error ?? "上传失败").font(CreationDesign.interface(.caption)).foregroundStyle(CreationDesign.danger) }
                 }
             }
         }
@@ -525,16 +527,225 @@ struct CreationLocalImage: View {
     }
 }
 
+struct CreationImageSelection: Identifiable {
+    let id = UUID()
+    let items: [CreationMedia]
+    let index: Int
+}
+
 struct CreationImagePreview: View {
-    let media: CreationMedia
+    let selection: CreationImageSelection
     let api: AdminAPIClient
     let site: String
     @Environment(\.dismiss) private var dismiss
+    @State private var index: Int
+    @State private var reload = 0
+    init(selection: CreationImageSelection, api: AdminAPIClient, site: String) {
+        self.selection = selection; self.api = api; self.site = site
+        _index = State(initialValue: min(max(selection.index, 0), max(selection.items.count - 1, 0)))
+    }
     var body: some View {
         NavigationStack {
-            GeometryReader { geometry in CreationLocalImage(media: media, site: site, api: api, contentMode: .fit).frame(width: geometry.size.width, height: geometry.size.height).clipped() }
-                .background(.black).navigationTitle("图片预览").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            CreationImagePager(selection: selection, site: site, siteRoot: api.siteRoot, index: $index, reload: reload, onDismiss: { dismiss() })
+            .background(.black)
+            .navigationTitle(selection.items.count > 1 ? "\(index + 1) / \(selection.items.count)" : "图片预览")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("重新加载图片", systemImage: "arrow.clockwise") { reload += 1 } }
+                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+            }
+        }.preferredColorScheme(.dark)
+    }
+}
+
+/// UIKit owns interactive movement; SwiftUI only receives committed page changes.
+private struct CreationImagePager: UIViewControllerRepresentable {
+    let selection: CreationImageSelection
+    let site: String
+    let siteRoot: URL
+    @Binding var index: Int
+    let reload: Int
+    let onDismiss: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIViewController(context: Context) -> UIPageViewController {
+        let pager = UIPageViewController(transitionStyle: .scroll, navigationOrientation: .horizontal)
+        pager.view.backgroundColor = .black
+        pager.view.accessibilityIdentifier = "image.gallery"
+        pager.dataSource = context.coordinator
+        pager.delegate = context.coordinator
+        let down = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.dragDown(_:)))
+        down.maximumNumberOfTouches = 1
+        down.delegate = context.coordinator
+        pager.view.addGestureRecognizer(down)
+        context.coordinator.pager = pager
+        context.coordinator.downGesture = down
+        for gesture in pager.gestureRecognizers where gesture is UIPanGestureRecognizer && gesture !== down {
+            gesture.require(toFail: down)
+        }
+        if let page = context.coordinator.page(index) {
+            pager.setViewControllers([page], direction: .forward, animated: false)
+            context.coordinator.retainNeighbors(around: index)
+        }
+        return pager
+    }
+    func updateUIViewController(_ pager: UIPageViewController, context: Context) {
+        context.coordinator.parent = self
+        if context.coordinator.reload != reload {
+            context.coordinator.reload = reload
+            (pager.viewControllers?.first as? CreationGalleryPage)?.load(force: true)
+        }
+    }
+    static func dismantleUIViewController(_ pager: UIPageViewController, coordinator: Coordinator) {
+        pager.dataSource = nil; pager.delegate = nil
+        if let gesture = coordinator.downGesture { pager.view.removeGestureRecognizer(gesture) }
+        coordinator.resetDrag(animated: false)
+        coordinator.pages.values.forEach { $0.cancel() }
+        coordinator.pages.removeAll()
+    }
+    @MainActor final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate {
+        var parent: CreationImagePager
+        var pages: [Int: CreationGalleryPage] = [:]
+        var reload: Int
+        weak var pager: UIPageViewController?
+        weak var downGesture: UIPanGestureRecognizer?
+        private weak var draggedView: UIView?
+        private var changingPage = false
+        private var dismissing = false
+        init(_ parent: CreationImagePager) { self.parent = parent; reload = parent.reload }
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer, !changingPage, !dismissing else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            return velocity.y > 0 && velocity.y > abs(velocity.x) * 1.2
+        }
+        @objc func dragDown(_ pan: UIPanGestureRecognizer) {
+            guard let pager else { return }
+            switch pan.state {
+            case .began:
+                draggedView = pager.viewControllers?.first?.view
+            case .changed:
+                let translation = pan.translation(in: pager.view)
+                let distance = max(0, translation.y)
+                let fraction = min(distance / max(pager.view.bounds.height, 1), 1)
+                let scale = UIAccessibility.isReduceMotionEnabled ? 1 : 1 - fraction * 0.12
+                draggedView?.transform = CGAffineTransform(translationX: translation.x * 0.12, y: distance).scaledBy(x: scale, y: scale)
+            case .ended:
+                let distance = max(0, pan.translation(in: pager.view).y)
+                if distance > max(90, pager.view.bounds.height * 0.15) || (distance > 30 && pan.velocity(in: pager.view).y > 800) {
+                    dismissing = true
+                    parent.onDismiss()
+                } else { resetDrag(animated: true) }
+            case .cancelled, .failed: resetDrag(animated: true)
+            default: break
+            }
+        }
+        func resetDrag(animated: Bool) {
+            guard let view = draggedView else { return }
+            draggedView = nil
+            if animated {
+                UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0.15 : 0.3, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0, options: [.beginFromCurrentState, .allowUserInteraction]) { view.transform = .identity }
+            } else { view.transform = .identity }
+        }
+        func page(_ index: Int) -> CreationGalleryPage? {
+            guard parent.selection.items.indices.contains(index) else { return nil }
+            if let page = pages[index] { return page }
+            let page = CreationGalleryPage(index: index, media: parent.selection.items[index], site: parent.site, siteRoot: parent.siteRoot)
+            pages[index] = page
+            page.loadViewIfNeeded() // Prefetch and decode before the swipe reaches this page.
+            return page
+        }
+        func retainNeighbors(around index: Int) {
+            for key in Array(pages.keys) where abs(key - index) > 1 { pages.removeValue(forKey: key)?.cancel() }
+            _ = page(index - 1); _ = page(index + 1)
+        }
+        func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
+            guard let page = viewController as? CreationGalleryPage else { return nil }
+            return self.page(page.index - 1)
+        }
+        func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
+            guard let page = viewController as? CreationGalleryPage else { return nil }
+            return self.page(page.index + 1)
+        }
+        func pageViewController(_ pageViewController: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) { changingPage = true }
+        func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
+            changingPage = false
+            guard let page = pageViewController.viewControllers?.first as? CreationGalleryPage else { return }
+            if completed { parent.index = page.index }
+            retainNeighbors(around: page.index)
+        }
+    }
+}
+
+@MainActor
+final class CreationGalleryPage: UIViewController {
+    let index: Int
+    private let media: CreationMedia
+    private let site: String
+    private let siteRoot: URL
+    private let loader: ImageLoader
+    private let photo = UIImageView()
+    private let spinner = UIActivityIndicatorView(style: .medium)
+    private let retryButton = UIButton(type: .system)
+    private var loading: Task<Void, Never>?
+    private var generation = 0
+    init(index: Int, media: CreationMedia, site: String, siteRoot: URL, loader: ImageLoader = .shared) {
+        self.index = index; self.media = media; self.site = site; self.siteRoot = siteRoot; self.loader = loader
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        photo.contentMode = .scaleAspectFit
+        photo.accessibilityIdentifier = "gallery.photo.\(index)"
+        photo.isAccessibilityElement = true
+        photo.accessibilityLabel = "第 \(index + 1) 张图片"
+        spinner.color = .white
+        retryButton.setTitle("图片加载失败，点此重试", for: .normal)
+        retryButton.tintColor = .white
+        retryButton.addTarget(self, action: #selector(retryImage), for: .touchUpInside)
+        for child in [photo, spinner, retryButton] { child.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(child) }
+        NSLayoutConstraint.activate([
+            photo.leadingAnchor.constraint(equalTo: view.leadingAnchor), photo.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            photo.topAnchor.constraint(equalTo: view.topAnchor), photo.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor), spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            retryButton.centerXAnchor.constraint(equalTo: view.centerXAnchor), retryButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            retryButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+        ])
+        load()
+    }
+    @objc private func retryImage() { load(force: true) }
+    func cancel() { generation += 1; loading?.cancel(); loading = nil }
+    func load(force: Bool = false) {
+        cancel()
+        let token = generation
+        retryButton.isHidden = true
+        if photo.image == nil { spinner.startAnimating() }
+        loading = Task { [weak self, media, site, siteRoot, loader] in
+            do {
+                let image: UIImage
+                let localURL = if let filename = media.filename { try? await CreationDraftStore.shared.imageURL(site: site, filename: filename) } else { URL?.none }
+                let localImage = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+                        guard let url = localURL else { return nil }
+                        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+                              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 2048, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { return nil }
+                        return image
+                    }.value
+                try Task.checkCancellation()
+                if let localImage {
+                    image = UIImage(cgImage: localImage)
+                } else if CreationPreview.isEnabled, let preview = UIImage(named: media.remotePath?.contains("/preview-1.") == true ? "BrandCat" : "EditorialPreview") {
+                    image = await preview.byPreparingForDisplay() ?? preview
+                } else if let path = media.remotePath, let url = URL(string: path, relativeTo: siteRoot)?.absoluteURL, ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                    image = UIImage(cgImage: try await loader.image(for: url, maxPixelSize: 2048, forceReload: force))
+                } else { throw URLError(.badURL) }
+                guard !Task.isCancelled, let self, self.generation == token else { return }
+                self.photo.image = image
+                self.photo.accessibilityValue = "已加载"
+                self.spinner.stopAnimating()
+            } catch {
+                guard !Task.isCancelled, let self, self.generation == token else { return }
+                self.spinner.stopAnimating(); self.retryButton.isHidden = false
+            }
         }
     }
 }
